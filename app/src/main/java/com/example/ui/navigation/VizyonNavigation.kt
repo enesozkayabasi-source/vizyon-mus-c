@@ -73,8 +73,11 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.compose.animation.AnimatedVisibility
+import com.example.model.MusicStoryItem
 import com.example.model.MusicTrack
 import com.example.model.PlaylistCoverStyle
+import com.example.model.PublicProfile
 import com.example.model.UiState
 import com.example.model.sanitizeFirestoreId
 import com.example.notifications.VizyonNotificationHelper
@@ -88,6 +91,7 @@ import com.example.ui.components.NotificationInboxSheet
 import com.example.ui.components.NowPlayingModal
 import com.example.ui.components.ShareTrackDialog
 import com.example.ui.components.StoryStudioSheet
+import com.example.ui.components.StoryViewerOverlay
 import com.example.ui.components.VaultUnlockDialog
 import com.example.ui.components.rememberSharedYouTubeWebView
 import com.example.ui.screens.AppearanceSettingsScreen
@@ -180,6 +184,7 @@ fun VizyonMainShell(
   var playlistPickerTrack by remember { mutableStateOf<MusicTrack?>(null) }
   var shareDialogTrack by remember { mutableStateOf<MusicTrack?>(null) }
   var storyStudioTrackOverlay by remember { mutableStateOf<MusicTrack?>(null) }
+  var activeStoryForViewer by remember { mutableStateOf<MusicStoryItem?>(null) }
 
   LaunchedEffect(Unit) {
     VizyonNotificationHelper.ensureChannel(context)
@@ -543,6 +548,7 @@ fun VizyonMainShell(
                 onOpenStudioForCloudSync = {
                   navController.navigate(StudioRoute) { launchSingleTop = true }
                 },
+                onOpenStoryViewer = { activeStoryForViewer = it },
                 onNotifyMessage = { viewModel.notifyUser(it) }
               )
             }
@@ -827,6 +833,51 @@ fun VizyonMainShell(
         errorMessage = vaultUnlockError,
         onUnlockSubmit = { viewModel.unlockVault(it) }
       )
+    }
+
+    AnimatedVisibility(
+      visible = activeStoryForViewer != null,
+      enter = fadeIn(animationSpec = tween(180)),
+      exit = fadeOut(animationSpec = tween(160))
+    ) {
+      activeStoryForViewer?.let { story ->
+        val isAuthor =
+          story.userId == "local" || (!currentUserId.isNullOrBlank() && story.userId == currentUserId)
+        val listeners = (publicListenersState as? UiState.Success)?.data.orEmpty()
+        val authorProfile =
+          listeners.firstOrNull { it.userId == story.userId }
+            ?: PublicProfile(
+              id = story.userId,
+              userId = story.userId,
+              displayName = story.userName.ifBlank { "Vizyon Dinleyicisi" },
+              handle = story.userHandle.ifBlank { "@vizyon" },
+              photoUrl = story.userAvatarUrl,
+              currentTrackTitle = story.trackTitle,
+              currentArtistName = story.artistName
+            )
+        StoryViewerOverlay(
+          story = story,
+          isAuthor = isAuthor,
+          onDismiss = { activeStoryForViewer = null },
+          onPlayTrack = { tr ->
+            activeStoryForViewer = null
+            viewModel.playTrack(tr)
+          },
+          onDeleteStory = { storyId ->
+            activeStoryForViewer = null
+            viewModel.deleteStory(storyId)
+          },
+          onNotifyMessage = { viewModel.notifyUser(it) },
+          onOpenAuthorProfile = {
+            activeStoryForViewer = null
+            viewModel.openListenerProfileById(story.userId)
+          },
+          onMessageAuthor = {
+            activeStoryForViewer = null
+            viewModel.openDirectChat(authorProfile)
+          }
+        )
+      }
     }
 
     InAppNotificationBubble(

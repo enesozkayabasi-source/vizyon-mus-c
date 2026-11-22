@@ -26,6 +26,7 @@ import com.example.ui.components.NotificationInboxSheet
 import com.example.ui.components.SocialFeedTab
 import com.example.ui.components.SocialSegmentedTabs
 import com.example.ui.components.StoryViewerDialog
+import com.example.ui.components.StoryViewerOverlay
 import com.example.ui.theme.VizyonMusicTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -551,5 +552,52 @@ class NotificationAndStoryOverlayRobolectricTest {
 
     composeTestRule.onNodeWithTag("story_viewer_play_btn").performClick()
     assertTrue(played)
+  }
+
+  @Test
+  fun inAppStoryViewerOverlay_displaysCenteredHeaderCardAndBottomActionBar() {
+    var closed = false
+    var dmClicked = false
+    val story =
+      MusicStoryItem(
+        id = "story_overlay_1",
+        userId = "other_u_overlay",
+        userName = "Aslı Demir",
+        userHandle = "@asli",
+        trackId = "tr_overlay",
+        trackTitle = "Yalnızlık Senfonisi",
+        artistId = "art_overlay",
+        artistName = "Sertab Erener",
+        note = "Merkezde ortalanmış hikaye katmanı."
+      )
+
+    composeTestRule.setContent {
+      VizyonMusicTheme {
+        StoryViewerOverlay(
+          story = story,
+          isAuthor = false,
+          onDismiss = { closed = true },
+          onPlayTrack = {},
+          onDeleteStory = {},
+          onNotifyMessage = {},
+          onOpenAuthorProfile = {},
+          onMessageAuthor = { dmClicked = true }
+        )
+      }
+    }
+
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("story_viewer_dialog").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("story_viewer_card").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("story_viewer_bottom_bar").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("story_viewer_play_btn").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("story_viewer_dm_btn").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("story_viewer_share_png_btn").assertIsDisplayed()
+
+    composeTestRule.onNodeWithTag("story_viewer_dm_btn").performClick()
+    assertTrue(dmClicked)
+
+    composeTestRule.onNodeWithTag("close_story_viewer_btn").performClick()
+    assertTrue(closed)
   }
 }

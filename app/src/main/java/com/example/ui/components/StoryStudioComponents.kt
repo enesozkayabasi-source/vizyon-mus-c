@@ -3,9 +3,11 @@ package com.example.ui.components
 import android.graphics.drawable.ColorDrawable
 import android.view.ViewGroup
 import android.view.WindowManager
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -25,7 +27,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.core.view.WindowCompat
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -63,6 +67,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -330,6 +335,38 @@ fun StoryStudioSheet(
 }
 
 @Composable
+fun StoryViewerOverlay(
+  story: MusicStoryItem,
+  isAuthor: Boolean,
+  onDismiss: () -> Unit,
+  onPlayTrack: (MusicTrack) -> Unit,
+  onDeleteStory: (String) -> Unit,
+  onNotifyMessage: (String) -> Unit,
+  onOpenAuthorProfile: (() -> Unit)? = null,
+  onMessageAuthor: (() -> Unit)? = null
+) {
+  BackHandler(enabled = true) { onDismiss() }
+  Box(
+    modifier =
+      Modifier.fillMaxSize()
+        .pointerInput(Unit) {
+          detectTapGestures { }
+        }
+  ) {
+    StoryViewerContent(
+      story = story,
+      isAuthor = isAuthor,
+      onDismiss = onDismiss,
+      onPlayTrack = onPlayTrack,
+      onDeleteStory = onDeleteStory,
+      onNotifyMessage = onNotifyMessage,
+      onOpenAuthorProfile = onOpenAuthorProfile,
+      onMessageAuthor = onMessageAuthor
+    )
+  }
+}
+
+@Composable
 fun StoryViewerDialog(
   story: MusicStoryItem,
   isAuthor: Boolean,
@@ -340,10 +377,6 @@ fun StoryViewerDialog(
   onOpenAuthorProfile: (() -> Unit)? = null,
   onMessageAuthor: (() -> Unit)? = null
 ) {
-  val context = LocalContext.current
-  val scope = rememberCoroutineScope()
-  var isSharing by remember { mutableStateOf(false) }
-
   Dialog(
     onDismissRequest = onDismiss,
     properties =
@@ -375,161 +408,187 @@ fun StoryViewerDialog(
       }
     }
 
-    Box(
-      modifier =
-        Modifier.fillMaxSize()
-          .background(Color(0xF4040710))
-          .windowInsetsPadding(WindowInsets.safeDrawing)
-          .padding(horizontal = 16.dp, vertical = 12.dp)
-          .testTag("story_viewer_dialog")
+    StoryViewerContent(
+      story = story,
+      isAuthor = isAuthor,
+      onDismiss = onDismiss,
+      onPlayTrack = onPlayTrack,
+      onDeleteStory = onDeleteStory,
+      onNotifyMessage = onNotifyMessage,
+      onOpenAuthorProfile = onOpenAuthorProfile,
+      onMessageAuthor = onMessageAuthor
+    )
+  }
+}
+
+@Composable
+private fun StoryViewerContent(
+  story: MusicStoryItem,
+  isAuthor: Boolean,
+  onDismiss: () -> Unit,
+  onPlayTrack: (MusicTrack) -> Unit,
+  onDeleteStory: (String) -> Unit,
+  onNotifyMessage: (String) -> Unit,
+  onOpenAuthorProfile: (() -> Unit)? = null,
+  onMessageAuthor: (() -> Unit)? = null
+) {
+  val context = LocalContext.current
+  val scope = rememberCoroutineScope()
+  var isSharing by remember { mutableStateOf(false) }
+
+  BoxWithConstraints(
+    contentAlignment = Alignment.Center,
+    modifier =
+      Modifier.fillMaxSize()
+        .background(Color(0xF2040710))
+        .windowInsetsPadding(WindowInsets.safeDrawing)
+        .padding(horizontal = 16.dp, vertical = 14.dp)
+        .testTag("story_viewer_dialog")
+  ) {
+    val fixedChromeHeight = 168.dp
+    val availableCardH =
+      minOf(maxHeight - fixedChromeHeight, maxHeight * 0.56f).coerceAtLeast(140.dp)
+    val cardMaxW = (maxWidth - 16.dp).coerceAtMost(276.dp)
+    val targetHeight = minOf(availableCardH, cardMaxW * (14f / 9f))
+    val targetWidth = (targetHeight * (9f / 14f)).coerceAtMost(cardMaxW)
+
+    Column(
+      horizontalAlignment = Alignment.CenterHorizontally,
+      verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
+      modifier = Modifier.widthIn(max = 380.dp).fillMaxWidth().wrapContentHeight()
     ) {
-      Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.fillMaxSize()
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+        modifier = Modifier.fillMaxWidth()
       ) {
         Row(
           verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.SpaceBetween,
-          modifier = Modifier.fillMaxWidth()
-        ) {
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-            modifier =
-              Modifier.weight(1f)
-                .clip(RoundedCornerShape(14.dp))
-                .clickable(enabled = !isAuthor && onOpenAuthorProfile != null) {
-                  onDismiss()
-                  onOpenAuthorProfile?.invoke()
-                }
-                .padding(vertical = 4.dp)
-          ) {
-            StudioAvatar(
-              photoUrlOrPath = story.userAvatarUrl,
-              contentDescription = story.userName,
-              size = 42.dp
-            )
-            Column {
-              Text(
-                text = story.userName.ifBlank { "Vizyon Dinleyicisi" },
-                style = MaterialTheme.typography.titleSmall,
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-              )
-              Text(
-                text = formatRelativeTimeTr(story.createdAt),
-                style = MaterialTheme.typography.labelSmall,
-                color = Color(0xFFBBD0F5),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-              )
-            }
-          }
-          Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            if (isAuthor) {
-              StudioCircleIconButton(
-                icon = Icons.Rounded.DeleteOutline,
-                contentDescription = "Hikayeyi sil",
-                onClick = {
-                  onDeleteStory(story.id)
-                  onDismiss()
-                },
-                tint = MaterialTheme.colorScheme.error,
-                size = 48.dp,
-                modifier = Modifier.testTag("story_viewer_delete_btn")
-              )
-            }
-            StudioCircleIconButton(
-              icon = Icons.Rounded.Close,
-              contentDescription = "Hikayeyi kapat",
-              onClick = onDismiss,
-              tint = Color.White,
-              size = 48.dp,
-              modifier = Modifier.testTag("close_story_viewer_btn")
-            )
-          }
-        }
-
-        BoxWithConstraints(
-          contentAlignment = Alignment.Center,
-          modifier = Modifier.weight(1f).fillMaxWidth().padding(vertical = 8.dp)
-        ) {
-          val safeMaxH = maxHeight.coerceAtLeast(120.dp)
-          val safeMaxW = maxWidth.coerceAtLeast(140.dp)
-          val targetHeight = minOf(safeMaxH, safeMaxW * (14f / 9f))
-          val targetWidth = (targetHeight * (9f / 14f)).coerceAtMost(safeMaxW)
-          StoryCardVisualPreview(
-            story = story,
-            modifier =
-              Modifier.width(targetWidth)
-                .height(targetHeight)
-                .testTag("story_viewer_card")
-          )
-        }
-
-        Surface(
-          color = Color(0xE60B1328),
-          shape = RoundedCornerShape(22.dp),
+          horizontalArrangement = Arrangement.spacedBy(10.dp),
           modifier =
-            Modifier.fillMaxWidth()
-              .padding(bottom = 4.dp)
-              .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(22.dp))
-              .testTag("story_viewer_bottom_bar")
+            Modifier.weight(1f)
+              .clip(RoundedCornerShape(14.dp))
+              .clickable(enabled = !isAuthor && onOpenAuthorProfile != null) {
+                onDismiss()
+                onOpenAuthorProfile?.invoke()
+              }
+              .padding(vertical = 4.dp)
         ) {
-          Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.fillMaxWidth().padding(10.dp)
-          ) {
-            StudioGradientCtaButton(
-              text = "Parçayı Çal",
-              icon = Icons.Rounded.PlayArrow,
-              contentPadding = PaddingValues(horizontal = 10.dp, vertical = 11.dp),
+          StudioAvatar(
+            photoUrlOrPath = story.userAvatarUrl,
+            contentDescription = story.userName,
+            size = 42.dp
+          )
+          Column {
+            Text(
+              text = story.userName.ifBlank { "Vizyon Dinleyicisi" },
+              style = MaterialTheme.typography.titleSmall,
+              color = Color.White,
+              fontWeight = FontWeight.Bold,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+            Text(
+              text = formatRelativeTimeTr(story.createdAt),
+              style = MaterialTheme.typography.labelSmall,
+              color = Color(0xFFBBD0F5),
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+          if (isAuthor) {
+            StudioCircleIconButton(
+              icon = Icons.Rounded.DeleteOutline,
+              contentDescription = "Hikayeyi sil",
               onClick = {
-                onPlayTrack(story.toMusicTrack())
+                onDeleteStory(story.id)
                 onDismiss()
               },
-              modifier = Modifier.weight(1f).testTag("story_viewer_play_btn")
-            )
-            if (!isAuthor && onMessageAuthor != null) {
-              StudioCircleIconButton(
-                icon = Icons.Rounded.ChatBubbleOutline,
-                contentDescription = "Hikaye sahibine mesaj gönder",
-                tint = Color.White,
-                highlighted = true,
-                size = 48.dp,
-                onClick = {
-                  onDismiss()
-                  onMessageAuthor()
-                },
-                modifier = Modifier.testTag("story_viewer_dm_btn")
-              )
-            }
-            StudioGlassButton(
-              text = if (isSharing) "Hazır..." else "Kartı Paylaş",
-              icon = Icons.Rounded.Share,
-              enabled = !isSharing,
-              tintColor = Color.White,
-              containerColor = Color.White.copy(alpha = 0.14f),
-              borderColor = Color.White.copy(alpha = 0.34f),
-              contentPadding = PaddingValues(horizontal = 10.dp, vertical = 11.dp),
-              onClick = {
-                isSharing = true
-                scope.launch {
-                  val uri = StoryBitmapRenderer.renderAndCacheStoryPngUri(context, story)
-                  isSharing = false
-                  if (uri != null) {
-                    StoryBitmapRenderer.launchExternalStoryShareChooser(context, uri, story)
-                  } else {
-                    onNotifyMessage("Hikaye kartı görseli oluşturulamadı.")
-                  }
-                }
-              },
-              modifier = Modifier.weight(1f).testTag("story_viewer_share_png_btn")
+              tint = MaterialTheme.colorScheme.error,
+              size = 48.dp,
+              modifier = Modifier.testTag("story_viewer_delete_btn")
             )
           }
+          StudioCircleIconButton(
+            icon = Icons.Rounded.Close,
+            contentDescription = "Hikayeyi kapat",
+            onClick = onDismiss,
+            tint = Color.White,
+            size = 48.dp,
+            modifier = Modifier.testTag("close_story_viewer_btn")
+          )
+        }
+      }
+
+      StoryCardVisualPreview(
+        story = story,
+        modifier =
+          Modifier.width(targetWidth)
+            .height(targetHeight)
+            .testTag("story_viewer_card")
+      )
+
+      Surface(
+        color = Color(0xE60B1328),
+        shape = RoundedCornerShape(22.dp),
+        modifier =
+          Modifier.fillMaxWidth()
+            .border(1.dp, Color.White.copy(alpha = 0.18f), RoundedCornerShape(22.dp))
+            .testTag("story_viewer_bottom_bar")
+      ) {
+        Row(
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          modifier = Modifier.fillMaxWidth().padding(10.dp)
+        ) {
+          StudioGradientCtaButton(
+            text = "Parçayı Çal",
+            icon = Icons.Rounded.PlayArrow,
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 11.dp),
+            onClick = {
+              onPlayTrack(story.toMusicTrack())
+              onDismiss()
+            },
+            modifier = Modifier.weight(1f).testTag("story_viewer_play_btn")
+          )
+          if (!isAuthor && onMessageAuthor != null) {
+            StudioCircleIconButton(
+              icon = Icons.Rounded.ChatBubbleOutline,
+              contentDescription = "Hikaye sahibine mesaj gönder",
+              tint = Color.White,
+              highlighted = true,
+              size = 48.dp,
+              onClick = {
+                onDismiss()
+                onMessageAuthor()
+              },
+              modifier = Modifier.testTag("story_viewer_dm_btn")
+            )
+          }
+          StudioGlassButton(
+            text = if (isSharing) "Hazır..." else "Kartı Paylaş",
+            icon = Icons.Rounded.Share,
+            enabled = !isSharing,
+            tintColor = Color.White,
+            containerColor = Color.White.copy(alpha = 0.14f),
+            borderColor = Color.White.copy(alpha = 0.34f),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 11.dp),
+            onClick = {
+              isSharing = true
+              scope.launch {
+                val uri = StoryBitmapRenderer.renderAndCacheStoryPngUri(context, story)
+                isSharing = false
+                if (uri != null) {
+                  StoryBitmapRenderer.launchExternalStoryShareChooser(context, uri, story)
+                } else {
+                  onNotifyMessage("Hikaye kartı görseli oluşturulamadı.")
+                }
+              }
+            },
+            modifier = Modifier.weight(1f).testTag("story_viewer_share_png_btn")
+          )
         }
       }
     }

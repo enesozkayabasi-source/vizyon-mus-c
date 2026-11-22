@@ -130,6 +130,7 @@ fun SocialFeedScreen(
   onInspectFollowLists: (String) -> Unit = {},
   onArtistClick: (ArtistSummary) -> Unit,
   onOpenStudioForCloudSync: () -> Unit,
+  onOpenStoryViewer: ((MusicStoryItem) -> Unit)? = null,
   onNotifyMessage: (String) -> Unit = {}
 ) {
   var selectedTab by remember { mutableStateOf(SocialFeedTab.ALL) }
@@ -188,7 +189,11 @@ fun SocialFeedScreen(
       is NotificationDeepLinkTarget.OpenStory -> {
         val story = activeStories.firstOrNull { it.id == target.storyId }
         if (story != null) {
-          activeStoryForViewer = story
+          if (onOpenStoryViewer != null) {
+            onOpenStoryViewer(story)
+          } else {
+            activeStoryForViewer = story
+          }
           onConsumeDeepLink()
         } else if (storiesState is UiState.Success) {
           onConsumeDeepLink()
@@ -443,7 +448,13 @@ fun SocialFeedScreen(
             storyStudioInitialTrack = currentTrack ?: candidateTracks.firstOrNull()
             showStoryStudio = true
           },
-          onStoryClick = { activeStoryForViewer = it }
+          onStoryClick = { story ->
+            if (onOpenStoryViewer != null) {
+              onOpenStoryViewer(story)
+            } else {
+              activeStoryForViewer = story
+            }
+          }
         )
       }
 
