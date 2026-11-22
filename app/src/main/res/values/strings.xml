@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">Vizyon Music</string>
+    <string name="sign_in_with_google">Google ile Giriş Yap</string>
+    <string name="nav_discover">Keşfet</string>
+    <string name="nav_search">Ara</string>
+    <string name="nav_feed">Akış</string>
+    <string name="nav_library">Kitaplık</string>
+    <string name="nav_studio">Profil</string>
+    <string name="lyrics_button_label">Şarkı Sözleri</string>
+    <string name="lyrics_loading">Şarkı sözleri aranıyor…</string>
+    <string name="lyrics_not_found">Bu parça için şarkı sözü henüz bulunamadı.</string>
+    <string name="lyrics_instrumental">Bu parça enstrümantal görünüyor.</string>
+</resources>

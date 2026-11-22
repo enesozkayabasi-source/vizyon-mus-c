@@ -1,0 +1,604 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Global Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidTimestamp(ts) {
+      return ts is timestamp && ts <= request.time;
+    }
+
+    function isValidSource(src) {
+      return src in ['YOUTUBE', 'ITUNES', 'HYBRID'];
+    }
+
+    function isValidStoryTheme(theme) {
+      return theme in ['NEON_WAVE', 'AMOLED_GOLD', 'GLASS_STUDIO', 'SUNSET_VINYL', 'MIDNIGHT_AURORA'];
+    }
+
+    function isValidChatPrivacy(privacy) {
+      return privacy in ['PUBLIC', 'FOLLOWERS_ONLY'];
+    }
+
+    function isValidAvatarString(url) {
+      return url is string && (
+        url == '' ||
+        (url.size() <= 500 && url.matches('^https?://.*')) ||
+        (url.size() <= 24000 && url.matches('^data:image/(jpeg|jpg|png|webp);base64,[A-Za-z0-9+/=]+$'))
+      );
+    }
+
+    function isValidStringList(listVal, maxCount) {
+      return listVal is list && listVal.size() <= maxCount && (listVal.size() == 0 || listVal[0] is string);
+    }
+
+    // --- Validation Blueprints ---
+
+    function isValidUserProfile(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 50 &&
+             data.handle is string && data.handle.size() >= 2 && data.handle.size() <= 30 &&
+             (!('bio' in data) || (data.bio is string && data.bio.size() <= 200)) &&
+             (!('photoUrl' in data) || isValidAvatarString(data.photoUrl)) &&
+             (!('favoriteGenres' in data) || isValidStringList(data.favoriteGenres, 8)) &&
+             data.shareActivity is bool &&
+             (!('chatPrivacy' in data) || isValidChatPrivacy(data.chatPrivacy)) &&
+             (!('defaultStoryTheme' in data) || isValidStoryTheme(data.defaultStoryTheme)) &&
+             (!('securityPasscodeHash' in data) || (data.securityPasscodeHash is string && data.securityPasscodeHash.size() <= 128)) &&
+             (!('securityPasscodeSalt' in data) || (data.securityPasscodeSalt is string && data.securityPasscodeSalt.size() <= 64)) &&
+             (!('rememberMe' in data) || data.rememberMe is bool) &&
+             (!('lockOnLaunch' in data) || data.lockOnLaunch is bool) &&
+             (!('preferredThemeMode' in data) || (data.preferredThemeMode is string && data.preferredThemeMode.size() <= 32)) &&
+             (!('preferredAccentPalette' in data) || (data.preferredAccentPalette is string && data.preferredAccentPalette.size() <= 32)) &&
+             (!('preferredCornerDensity' in data) || (data.preferredCornerDensity is string && data.preferredCornerDensity.size() <= 32)) &&
+             (!('preferredLanguage' in data) || (data.preferredLanguage is string && data.preferredLanguage.size() <= 32)) &&
+             (!('onboardingCompleted' in data) || data.onboardingCompleted is bool) &&
+             (!('recentTracks' in data) || (data.recentTracks is list && data.recentTracks.size() <= 5 && (data.recentTracks.size() == 0 || data.recentTracks[0] is map))) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidPublicProfile(data) {
+      return data.userId is string && isValidId(data.userId) &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 50 &&
+             data.handle is string && data.handle.size() >= 2 && data.handle.size() <= 30 &&
+             (!('bio' in data) || (data.bio is string && data.bio.size() <= 160)) &&
+             (!('photoUrl' in data) || isValidAvatarString(data.photoUrl)) &&
+             data.discoverable is bool &&
+             (!('chatPrivacy' in data) || isValidChatPrivacy(data.chatPrivacy)) &&
+             (!('defaultStoryTheme' in data) || isValidStoryTheme(data.defaultStoryTheme)) &&
+             (!('currentTrackTitle' in data) || (data.currentTrackTitle is string && data.currentTrackTitle.size() <= 140)) &&
+             (!('currentArtistName' in data) || (data.currentArtistName is string && data.currentArtistName.size() <= 100)) &&
+             (!('lastTrackId' in data) || (data.lastTrackId is string && data.lastTrackId.size() <= 128)) &&
+             (!('lastTrackTitle' in data) || (data.lastTrackTitle is string && data.lastTrackTitle.size() <= 160)) &&
+             (!('lastArtistId' in data) || (data.lastArtistId is string && data.lastArtistId.size() <= 128)) &&
+             (!('lastArtistName' in data) || (data.lastArtistName is string && data.lastArtistName.size() <= 120)) &&
+             (!('lastTrackArtworkUrl' in data) || (data.lastTrackArtworkUrl is string && data.lastTrackArtworkUrl.size() <= 500)) &&
+             (!('lastTrackYoutubeId' in data) || (data.lastTrackYoutubeId is string && data.lastTrackYoutubeId.size() <= 64)) &&
+             (!('lastPlayedAtMillis' in data) || (data.lastPlayedAtMillis is int && data.lastPlayedAtMillis >= 0)) &&
+             (!('recentTracks' in data) || (data.recentTracks is list && data.recentTracks.size() <= 5 && (data.recentTracks.size() == 0 || data.recentTracks[0] is map))) &&
+             data.followerCount is int && data.followerCount >= 0 &&
+             (!('followingCount' in data) || (data.followingCount is int && data.followingCount >= 0)) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidFollowConnection(data) {
+      return data.targetUserId is string && isValidId(data.targetUserId) &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 50 &&
+             data.handle is string && data.handle.size() >= 2 && data.handle.size() <= 30 &&
+             (!('photoUrl' in data) || isValidAvatarString(data.photoUrl)) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidDirectChatThread(data) {
+      return data.chatId is string && isValidId(data.chatId) &&
+             data.participantIds is list && data.participantIds.size() == 2 &&
+             data.participantIds[0] is string && data.participantIds[1] is string &&
+             data.participantIds[0] != data.participantIds[1] &&
+             (!('participantNames' in data) || data.participantNames is map) &&
+             (!('participantHandles' in data) || data.participantHandles is map) &&
+             (!('participantAvatars' in data) || data.participantAvatars is map) &&
+             data.lastMessageText is string && data.lastMessageText.size() >= 1 && data.lastMessageText.size() <= 600 &&
+             data.lastSenderId is string && isValidId(data.lastSenderId) &&
+             (!('lastTrackTitle' in data) || (data.lastTrackTitle is string && data.lastTrackTitle.size() <= 160)) &&
+             data.lastMessageAtMillis is int && data.lastMessageAtMillis >= 0 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidDirectChatMessage(data) {
+      return data.chatId is string && isValidId(data.chatId) &&
+             data.participantIds is list && data.participantIds.size() == 2 &&
+             data.participantIds[0] is string && data.participantIds[1] is string &&
+             data.senderId is string && isValidId(data.senderId) &&
+             data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 50 &&
+             data.senderHandle is string && data.senderHandle.size() >= 2 && data.senderHandle.size() <= 30 &&
+             (!('senderAvatarUrl' in data) || isValidAvatarString(data.senderAvatarUrl)) &&
+             data.text is string && data.text.size() >= 1 && data.text.size() <= 600 &&
+             (!('trackId' in data) || (data.trackId is string && data.trackId.size() <= 128)) &&
+             (!('trackTitle' in data) || (data.trackTitle is string && data.trackTitle.size() <= 160)) &&
+             (!('artistName' in data) || (data.artistName is string && data.artistName.size() <= 120)) &&
+             (!('albumArtUrl' in data) || (data.albumArtUrl is string && data.albumArtUrl.size() <= 500)) &&
+             (!('youtubeVideoId' in data) || (data.youtubeVideoId is string && data.youtubeVideoId.size() <= 64)) &&
+             (!('source' in data) || (data.source == '' || isValidSource(data.source))) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidSavedTrack(data) {
+      return data.trackId is string && isValidId(data.trackId) &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 160 &&
+             data.artistId is string && data.artistId.size() >= 1 && data.artistId.size() <= 128 &&
+             data.artistName is string && data.artistName.size() >= 1 && data.artistName.size() <= 120 &&
+             (!('albumName' in data) || (data.albumName is string && data.albumName.size() <= 140)) &&
+             (!('artworkUrl' in data) || (data.artworkUrl is string && data.artworkUrl.size() <= 500)) &&
+             (!('youtubeVideoId' in data) || (data.youtubeVideoId is string && data.youtubeVideoId.size() <= 64)) &&
+             data.durationMs is int && data.durationMs >= 0 &&
+             isValidSource(data.source) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidPlaylist(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 80 &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 240)) &&
+             data.accentColorHex is string && data.accentColorHex.size() >= 4 && data.accentColorHex.size() <= 16 &&
+             data.coverStyle in ['CHROME', 'STAGE', 'STUDIO', 'EMERALD'] &&
+             data.sharedPublic is bool &&
+             data.trackCount is int && data.trackCount >= 0 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidFollowedArtist(data) {
+      return data.artistId is string && isValidId(data.artistId) &&
+             data.name is string && data.name.size() >= 1 && data.name.size() <= 120 &&
+             (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() <= 500)) &&
+             (!('genres' in data) || isValidStringList(data.genres, 6)) &&
+             isValidSource(data.source) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidActivityFeedItem(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 50 &&
+             data.userHandle is string && data.userHandle.size() >= 2 && data.userHandle.size() <= 30 &&
+             (!('userAvatarUrl' in data) || isValidAvatarString(data.userAvatarUrl)) &&
+             data.actionType in ['LISTENING', 'SHARED_TRACK', 'CREATED_PLAYLIST', 'FOLLOWED_ARTIST', 'REPOSTED_TRACK'] &&
+             data.trackId is string && data.trackId.size() >= 1 && data.trackId.size() <= 128 &&
+             data.trackTitle is string && data.trackTitle.size() >= 1 && data.trackTitle.size() <= 160 &&
+             data.artistId is string && data.artistId.size() >= 1 && data.artistId.size() <= 128 &&
+             data.artistName is string && data.artistName.size() >= 1 && data.artistName.size() <= 120 &&
+             (!('albumArtUrl' in data) || (data.albumArtUrl is string && data.albumArtUrl.size() <= 500)) &&
+             (!('youtubeVideoId' in data) || (data.youtubeVideoId is string && data.youtubeVideoId.size() <= 64)) &&
+             isValidSource(data.source) &&
+             (!('note' in data) || (data.note is string && data.note.size() <= 240)) &&
+             data.visibility in ['PUBLIC', 'FRIENDS'] &&
+             data.likesCount is int && data.likesCount >= 0 &&
+             (!('commentsCount' in data) || (data.commentsCount is int && data.commentsCount >= 0)) &&
+             (!('repostsCount' in data) || (data.repostsCount is int && data.repostsCount >= 0)) &&
+             (!('repostedFromName' in data) || (data.repostedFromName is string && data.repostedFromName.size() <= 50)) &&
+             (!('repostedFromHandle' in data) || (data.repostedFromHandle is string && data.repostedFromHandle.size() <= 30)) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidActivityComment(data) {
+      return data.activityId is string && isValidId(data.activityId) &&
+             data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 50 &&
+             data.userHandle is string && data.userHandle.size() >= 2 && data.userHandle.size() <= 30 &&
+             (!('userAvatarUrl' in data) || isValidAvatarString(data.userAvatarUrl)) &&
+             data.text is string && data.text.size() >= 1 && data.text.size() <= 280 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidArtistFanPost(data) {
+      return data.artistId is string && isValidId(data.artistId) &&
+             data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 50 &&
+             data.authorHandle is string && data.authorHandle.size() >= 2 && data.authorHandle.size() <= 30 &&
+             data.message is string && data.message.size() >= 1 && data.message.size() <= 280 &&
+             data.tag in ['APPLAUSE', 'REQUEST', 'CONCERT', 'MIX'] &&
+             data.cheersCount is int && data.cheersCount >= 0 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidMusicStoryItem(data) {
+      return data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+             data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 50 &&
+             data.userHandle is string && data.userHandle.size() >= 2 && data.userHandle.size() <= 30 &&
+             (!('userAvatarUrl' in data) || isValidAvatarString(data.userAvatarUrl)) &&
+             data.trackId is string && data.trackId.size() >= 1 && data.trackId.size() <= 128 &&
+             data.trackTitle is string && data.trackTitle.size() >= 1 && data.trackTitle.size() <= 160 &&
+             data.artistId is string && data.artistId.size() >= 1 && data.artistId.size() <= 128 &&
+             data.artistName is string && data.artistName.size() >= 1 && data.artistName.size() <= 120 &&
+             (!('albumArtUrl' in data) || (data.albumArtUrl is string && data.albumArtUrl.size() <= 500)) &&
+             (!('youtubeVideoId' in data) || (data.youtubeVideoId is string && data.youtubeVideoId.size() <= 64)) &&
+             isValidSource(data.source) &&
+             (!('note' in data) || (data.note is string && data.note.size() <= 140)) &&
+             isValidStoryTheme(data.cardTheme) &&
+             data.visibility in ['PUBLIC', 'FRIENDS'] &&
+             data.expiresAtMillis is int && data.expiresAtMillis > 0 &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidUserNotification(data) {
+      return data.recipientId is string && isValidId(data.recipientId) &&
+             data.senderId is string && data.senderId.size() >= 1 && data.senderId.size() <= 128 &&
+             data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 50 &&
+             data.senderHandle is string && data.senderHandle.size() >= 2 && data.senderHandle.size() <= 30 &&
+             (!('senderAvatarUrl' in data) || isValidAvatarString(data.senderAvatarUrl)) &&
+             data.type in ['FOLLOW', 'LIKE', 'COMMENT', 'REPOST', 'STORY', 'MESSAGE'] &&
+             (!('trackId' in data) || (data.trackId is string && data.trackId.size() <= 128)) &&
+             (!('trackTitle' in data) || (data.trackTitle is string && data.trackTitle.size() <= 160)) &&
+             data.message is string && data.message.size() >= 1 && data.message.size() <= 240 &&
+             (!('targetType' in data) || (data.targetType is string && data.targetType.size() <= 40)) &&
+             (!('targetId' in data) || (data.targetId is string && data.targetId.size() <= 128)) &&
+             data.read is bool &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    // --- Collection Rules ---
+
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+      allow create: if isOwner(userId) && isValidId(userId) &&
+                       incoming().keys().hasAll(['userId', 'displayName', 'handle', 'shareActivity', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'displayName', 'handle', 'bio', 'photoUrl', 'favoriteGenres', 'shareActivity',
+                         'chatPrivacy', 'defaultStoryTheme', 'securityPasscodeHash', 'securityPasscodeSalt',
+                         'rememberMe', 'lockOnLaunch', 'preferredThemeMode', 'preferredAccentPalette',
+                         'preferredCornerDensity', 'preferredLanguage', 'onboardingCompleted', 'recentTracks',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidUserProfile(incoming());
+      allow update: if isOwner(userId) && isValidId(userId) &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'displayName', 'handle', 'bio', 'photoUrl', 'favoriteGenres', 'shareActivity',
+                         'chatPrivacy', 'defaultStoryTheme', 'securityPasscodeHash', 'securityPasscodeSalt',
+                         'rememberMe', 'lockOnLaunch', 'preferredThemeMode', 'preferredAccentPalette',
+                         'preferredCornerDensity', 'preferredLanguage', 'onboardingCompleted', 'recentTracks',
+                         'updatedAt'
+                       ]);
+      allow delete: if isOwner(userId) && isValidId(userId);
+
+      match /following/{targetUserId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(targetUserId);
+        allow list: if isSignedIn() && isValidId(userId);
+        allow create: if isOwner(userId) && isValidId(targetUserId) &&
+                         incoming().targetUserId == targetUserId &&
+                         incoming().keys().hasAll(['targetUserId', 'displayName', 'handle', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['targetUserId', 'displayName', 'handle', 'photoUrl', 'createdAt', 'updatedAt']) &&
+                         isValidFollowConnection(incoming());
+        allow update: if isOwner(userId) && isValidId(targetUserId) &&
+                         isValidFollowConnection(incoming()) &&
+                         incoming().targetUserId == existing().targetUserId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'handle', 'photoUrl', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(targetUserId);
+      }
+
+      match /followers/{followerId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(followerId);
+        allow list: if isSignedIn() && isValidId(userId);
+        allow create: if isSignedIn() && isValidId(userId) && isValidId(followerId) &&
+                         request.auth.uid == followerId &&
+                         incoming().targetUserId == followerId &&
+                         incoming().keys().hasAll(['targetUserId', 'displayName', 'handle', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['targetUserId', 'displayName', 'handle', 'photoUrl', 'createdAt', 'updatedAt']) &&
+                         isValidFollowConnection(incoming());
+        allow update: if isSignedIn() && isValidId(userId) && isValidId(followerId) &&
+                         (isOwner(userId) || request.auth.uid == followerId) &&
+                         isValidFollowConnection(incoming()) &&
+                         incoming().targetUserId == existing().targetUserId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'handle', 'photoUrl', 'updatedAt']);
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(followerId) &&
+                         (isOwner(userId) || request.auth.uid == followerId);
+      }
+
+      match /notifications/{notificationId} {
+        allow get: if isOwner(userId) && isValidId(notificationId);
+        allow list: if isOwner(userId);
+        allow create: if isSignedIn() && isValidId(userId) && isValidId(notificationId) &&
+                         incoming().recipientId == userId &&
+                         incoming().senderId == request.auth.uid &&
+                         incoming().read == false &&
+                         incoming().keys().hasAll(['recipientId', 'senderId', 'senderName', 'senderHandle', 'type', 'message', 'read', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['recipientId', 'senderId', 'senderName', 'senderHandle', 'senderAvatarUrl', 'type', 'trackId', 'trackTitle', 'message', 'targetType', 'targetId', 'read', 'createdAt', 'updatedAt']) &&
+                         isValidUserNotification(incoming());
+        allow update: if isOwner(userId) && isValidId(notificationId) &&
+                         isValidUserNotification(incoming()) &&
+                         incoming().recipientId == existing().recipientId &&
+                         incoming().senderId == existing().senderId &&
+                         incoming().type == existing().type &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['read', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(notificationId);
+      }
+
+      match /favorites/{trackId} {
+        allow get: if isOwner(userId) && isValidId(trackId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(trackId) &&
+                         incoming().trackId == trackId &&
+                         incoming().keys().hasAll(['trackId', 'title', 'artistId', 'artistName', 'durationMs', 'source', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['trackId', 'title', 'artistId', 'artistName', 'albumName', 'artworkUrl', 'youtubeVideoId', 'durationMs', 'source', 'createdAt', 'updatedAt']) &&
+                         isValidSavedTrack(incoming());
+        allow update: if isOwner(userId) && isValidId(trackId) &&
+                         isValidSavedTrack(incoming()) &&
+                         incoming().trackId == existing().trackId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['title', 'artistName', 'albumName', 'artworkUrl', 'youtubeVideoId', 'durationMs', 'source', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(trackId);
+      }
+
+      // Legacy downloads collection: read/delete only for account cleanup; new writes disabled
+      match /downloads/{trackId} {
+        allow get, list: if isOwner(userId);
+        allow create, update: if false;
+        allow delete: if isOwner(userId) && isValidId(trackId);
+      }
+
+      match /playlists/{playlistId} {
+        allow get: if isOwner(userId) && isValidId(playlistId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(playlistId) &&
+                         incoming().userId == userId &&
+                         incoming().keys().hasAll(['userId', 'title', 'accentColorHex', 'coverStyle', 'sharedPublic', 'trackCount', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'title', 'description', 'accentColorHex', 'coverStyle', 'sharedPublic', 'trackCount', 'createdAt', 'updatedAt']) &&
+                         isValidPlaylist(incoming());
+        allow update: if isOwner(userId) && isValidId(playlistId) &&
+                         isValidPlaylist(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'accentColorHex', 'coverStyle', 'sharedPublic', 'trackCount', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(playlistId);
+
+        match /tracks/{trackId} {
+          allow get: if isOwner(userId) && isValidId(playlistId) && isValidId(trackId);
+          allow list: if isOwner(userId) && isValidId(playlistId);
+          allow create: if isOwner(userId) && isValidId(playlistId) && isValidId(trackId) &&
+                           incoming().trackId == trackId &&
+                           incoming().keys().hasAll(['trackId', 'title', 'artistId', 'artistName', 'durationMs', 'source', 'createdAt', 'updatedAt']) &&
+                           incoming().keys().hasOnly(['trackId', 'title', 'artistId', 'artistName', 'albumName', 'artworkUrl', 'youtubeVideoId', 'durationMs', 'source', 'createdAt', 'updatedAt']) &&
+                           isValidSavedTrack(incoming());
+          allow update: if isOwner(userId) && isValidId(playlistId) && isValidId(trackId) &&
+                           isValidSavedTrack(incoming()) &&
+                           incoming().trackId == existing().trackId &&
+                           incoming().createdAt == existing().createdAt &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['title', 'artistName', 'albumName', 'artworkUrl', 'youtubeVideoId', 'durationMs', 'source', 'updatedAt']);
+          allow delete: if isOwner(userId) && isValidId(playlistId) && isValidId(trackId);
+        }
+      }
+
+      match /followed_artists/{artistId} {
+        allow get: if isOwner(userId) && isValidId(artistId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(artistId) &&
+                         incoming().artistId == artistId &&
+                         incoming().keys().hasAll(['artistId', 'name', 'source', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['artistId', 'name', 'imageUrl', 'genres', 'source', 'createdAt', 'updatedAt']) &&
+                         isValidFollowedArtist(incoming());
+        allow update: if isOwner(userId) && isValidId(artistId) &&
+                         isValidFollowedArtist(incoming()) &&
+                         incoming().artistId == existing().artistId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['name', 'imageUrl', 'genres', 'source', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(artistId);
+      }
+    }
+
+    match /public_profiles/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (resource == null || resource.data.userId == request.auth.uid || resource.data.discoverable == true);
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || resource.data.discoverable == true);
+      allow create: if isOwner(userId) && isValidId(userId) &&
+                       incoming().userId == userId &&
+                       incoming().keys().hasAll(['userId', 'displayName', 'handle', 'discoverable', 'followerCount', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly([
+                         'userId', 'displayName', 'handle', 'bio', 'photoUrl', 'discoverable',
+                         'chatPrivacy', 'defaultStoryTheme',
+                         'currentTrackTitle', 'currentArtistName', 'lastTrackId', 'lastTrackTitle',
+                         'lastArtistId', 'lastArtistName', 'lastTrackArtworkUrl', 'lastTrackYoutubeId',
+                         'lastPlayedAtMillis', 'recentTracks', 'followerCount', 'followingCount',
+                         'createdAt', 'updatedAt'
+                       ]) &&
+                       isValidPublicProfile(incoming());
+      allow update: if isSignedIn() && isValidId(userId) &&
+                       isValidPublicProfile(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt && (
+                         (isOwner(userId) &&
+                          incoming().diff(existing()).affectedKeys().hasOnly([
+                            'displayName', 'handle', 'bio', 'photoUrl', 'discoverable',
+                            'chatPrivacy', 'defaultStoryTheme',
+                            'currentTrackTitle', 'currentArtistName', 'lastTrackId', 'lastTrackTitle',
+                            'lastArtistId', 'lastArtistName', 'lastTrackArtworkUrl', 'lastTrackYoutubeId',
+                            'lastPlayedAtMillis', 'recentTracks', 'followerCount', 'followingCount', 'updatedAt'
+                          ])) ||
+                         (existing().discoverable == true &&
+                          (incoming().followerCount == existing().followerCount + 1 ||
+                           (existing().followerCount > 0 && incoming().followerCount == existing().followerCount - 1)) &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['followerCount', 'updatedAt']))
+                       );
+      allow delete: if isOwner(userId) && isValidId(userId);
+    }
+
+    match /activity_feed/{activityId} {
+      allow get: if isSignedIn() && isValidId(activityId) && (resource.data.userId == request.auth.uid || resource.data.visibility == 'PUBLIC');
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || resource.data.visibility == 'PUBLIC');
+      allow create: if isSignedIn() && isValidId(activityId) &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().likesCount == 0 &&
+                       (!('commentsCount' in incoming()) || incoming().commentsCount == 0) &&
+                       (!('repostsCount' in incoming()) || incoming().repostsCount == 0) &&
+                       incoming().keys().hasAll(['userId', 'userName', 'userHandle', 'actionType', 'trackId', 'trackTitle', 'artistId', 'artistName', 'source', 'visibility', 'likesCount', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'userName', 'userHandle', 'userAvatarUrl', 'actionType', 'trackId', 'trackTitle', 'artistId', 'artistName', 'albumArtUrl', 'youtubeVideoId', 'source', 'note', 'visibility', 'likesCount', 'commentsCount', 'repostsCount', 'repostedFromName', 'repostedFromHandle', 'createdAt', 'updatedAt']) &&
+                       isValidActivityFeedItem(incoming());
+      allow update: if isSignedIn() && isValidId(activityId) &&
+                       isValidActivityFeedItem(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt && (
+                         (existing().userId == request.auth.uid &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['note', 'visibility', 'updatedAt'])) ||
+                         ((existing().visibility == 'PUBLIC' || existing().userId == request.auth.uid) &&
+                          incoming().likesCount == existing().likesCount + 1 &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['likesCount', 'updatedAt'])) ||
+                         ((existing().visibility == 'PUBLIC' || existing().userId == request.auth.uid) &&
+                          incoming().commentsCount == existing().get('commentsCount', 0) + 1 &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['commentsCount', 'updatedAt'])) ||
+                         ((existing().visibility == 'PUBLIC' || existing().userId == request.auth.uid) &&
+                          incoming().repostsCount == existing().get('repostsCount', 0) + 1 &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['repostsCount', 'updatedAt']))
+                       );
+      allow delete: if isSignedIn() && isValidId(activityId) && resource.data.userId == request.auth.uid;
+
+      match /comments/{commentId} {
+        allow get: if isSignedIn() && isValidId(activityId) && isValidId(commentId) &&
+                      (get(/databases/$(database)/documents/activity_feed/$(activityId)).data.visibility == 'PUBLIC' ||
+                       get(/databases/$(database)/documents/activity_feed/$(activityId)).data.userId == request.auth.uid);
+        allow list: if isSignedIn() && isValidId(activityId) &&
+                       resource.data.activityId == activityId &&
+                       (get(/databases/$(database)/documents/activity_feed/$(activityId)).data.visibility == 'PUBLIC' ||
+                        get(/databases/$(database)/documents/activity_feed/$(activityId)).data.userId == request.auth.uid);
+        allow create: if isSignedIn() && isValidId(activityId) && isValidId(commentId) &&
+                         incoming().userId == request.auth.uid &&
+                         incoming().activityId == activityId &&
+                         (get(/databases/$(database)/documents/activity_feed/$(activityId)).data.visibility == 'PUBLIC' ||
+                          get(/databases/$(database)/documents/activity_feed/$(activityId)).data.userId == request.auth.uid) &&
+                         incoming().keys().hasAll(['activityId', 'userId', 'userName', 'userHandle', 'text', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['activityId', 'userId', 'userName', 'userHandle', 'userAvatarUrl', 'text', 'createdAt', 'updatedAt']) &&
+                         isValidActivityComment(incoming());
+        allow update: if isSignedIn() && isValidId(activityId) && isValidId(commentId) &&
+                         existing().userId == request.auth.uid &&
+                         isValidActivityComment(incoming()) &&
+                         incoming().activityId == existing().activityId &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['text', 'updatedAt']);
+        allow delete: if isSignedIn() && isValidId(activityId) && isValidId(commentId) &&
+                         existing().userId == request.auth.uid;
+      }
+    }
+
+    match /artists/{artistId}/fan_posts/{postId} {
+      allow get: if isSignedIn() && isValidId(artistId) && isValidId(postId) && resource.data.artistId == artistId;
+      allow list: if isSignedIn() && isValidId(artistId) && resource.data.artistId == artistId;
+      allow create: if isSignedIn() && isValidId(artistId) && isValidId(postId) &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().artistId == artistId &&
+                       incoming().cheersCount == 0 &&
+                       incoming().keys().hasAll(['artistId', 'userId', 'authorName', 'authorHandle', 'message', 'tag', 'cheersCount', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['artistId', 'userId', 'authorName', 'authorHandle', 'message', 'tag', 'cheersCount', 'createdAt', 'updatedAt']) &&
+                       isValidArtistFanPost(incoming());
+      allow update: if isSignedIn() && isValidId(artistId) && isValidId(postId) &&
+                       isValidArtistFanPost(incoming()) &&
+                       incoming().artistId == existing().artistId &&
+                       incoming().userId == existing().userId &&
+                       incoming().createdAt == existing().createdAt && (
+                         (existing().userId == request.auth.uid &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['message', 'tag', 'updatedAt'])) ||
+                         (incoming().cheersCount == existing().cheersCount + 1 &&
+                          incoming().diff(existing()).affectedKeys().hasOnly(['cheersCount', 'updatedAt']))
+                       );
+      allow delete: if isSignedIn() && isValidId(artistId) && isValidId(postId) && resource.data.userId == request.auth.uid;
+    }
+
+    match /stories/{storyId} {
+      allow get: if isSignedIn() && isValidId(storyId) && (resource.data.userId == request.auth.uid || resource.data.visibility == 'PUBLIC');
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || resource.data.visibility == 'PUBLIC');
+      allow create: if isSignedIn() && isValidId(storyId) &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().keys().hasAll(['userId', 'userName', 'userHandle', 'trackId', 'trackTitle', 'artistId', 'artistName', 'source', 'cardTheme', 'visibility', 'expiresAtMillis', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'userName', 'userHandle', 'userAvatarUrl', 'trackId', 'trackTitle', 'artistId', 'artistName', 'albumArtUrl', 'youtubeVideoId', 'source', 'note', 'cardTheme', 'visibility', 'expiresAtMillis', 'createdAt', 'updatedAt']) &&
+                       isValidMusicStoryItem(incoming());
+      allow update: if false;
+      allow delete: if isSignedIn() && isValidId(storyId) && resource.data.userId == request.auth.uid;
+    }
+
+    match /chats/{chatId} {
+      allow get: if isSignedIn() && isValidId(chatId) && (resource == null || request.auth.uid in resource.data.participantIds);
+      allow list: if isSignedIn() && request.auth.uid in resource.data.participantIds;
+      allow create: if isSignedIn() && isValidId(chatId) &&
+                       incoming().chatId == chatId &&
+                       request.auth.uid in incoming().participantIds &&
+                       incoming().lastSenderId == request.auth.uid &&
+                       incoming().keys().hasAll(['chatId', 'participantIds', 'lastMessageText', 'lastSenderId', 'lastMessageAtMillis', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['chatId', 'participantIds', 'participantNames', 'participantHandles', 'participantAvatars', 'lastMessageText', 'lastSenderId', 'lastTrackTitle', 'lastMessageAtMillis', 'createdAt', 'updatedAt']) &&
+                       isValidDirectChatThread(incoming());
+      allow update: if isSignedIn() && isValidId(chatId) &&
+                       request.auth.uid in existing().participantIds &&
+                       incoming().chatId == existing().chatId &&
+                       incoming().participantIds == existing().participantIds &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().lastSenderId == request.auth.uid &&
+                       isValidDirectChatThread(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly([
+                         'participantNames', 'participantHandles', 'participantAvatars',
+                         'lastMessageText', 'lastSenderId', 'lastTrackTitle', 'lastMessageAtMillis', 'updatedAt'
+                       ]);
+      allow delete: if isSignedIn() && isValidId(chatId) && request.auth.uid in resource.data.participantIds;
+
+      match /messages/{messageId} {
+        allow get: if isSignedIn() && isValidId(chatId) && isValidId(messageId) &&
+                      request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds &&
+                      (resource == null || request.auth.uid in resource.data.participantIds);
+        allow list: if isSignedIn() && isValidId(chatId) &&
+                       request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds &&
+                       request.auth.uid in resource.data.participantIds;
+        allow create: if isSignedIn() && isValidId(chatId) && isValidId(messageId) &&
+                         incoming().chatId == chatId &&
+                         incoming().senderId == request.auth.uid &&
+                         request.auth.uid in incoming().participantIds &&
+                         incoming().participantIds == get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds &&
+                         incoming().keys().hasAll(['chatId', 'participantIds', 'senderId', 'senderName', 'senderHandle', 'text', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly([
+                           'chatId', 'participantIds', 'senderId', 'senderName', 'senderHandle', 'senderAvatarUrl',
+                           'text', 'trackId', 'trackTitle', 'artistName', 'albumArtUrl', 'youtubeVideoId', 'source',
+                           'createdAt', 'updatedAt'
+                         ]) &&
+                         isValidDirectChatMessage(incoming());
+        allow update: if false;
+        allow delete: if isSignedIn() && isValidId(chatId) && isValidId(messageId) &&
+                         (resource.data.senderId == request.auth.uid || request.auth.uid in resource.data.participantIds);
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Vizyon Music",
+  "description": "Vizyon Music — iTunes Search API kataloğu, resmi YouTube IFrame video oynatıcı, senkron şarkı sözleri ve sosyal paylaşım akışlı yasal müzik keşif platformu.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

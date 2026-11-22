@@ -1,0 +1,347 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private user account settings, cloud vault passcode, and preferences for Vizyon Music.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID" },
+        "displayName": { "type": "string", "description": "User display name" },
+        "handle": { "type": "string", "description": "Unique handle starting with @" },
+        "bio": { "type": "string", "description": "Short user bio" },
+        "photoUrl": { "type": "string", "description": "Avatar URL or compressed JPEG data URI" },
+        "favoriteGenres": { "type": "array", "description": "List of preferred music genres" },
+        "shareActivity": { "type": "boolean", "description": "Whether activity is shared" },
+        "chatPrivacy": { "type": "string", "enum": ["PUBLIC", "FOLLOWERS_ONLY"] },
+        "defaultStoryTheme": { "type": "string", "enum": ["NEON_WAVE", "AMOLED_GOLD", "GLASS_STUDIO", "SUNSET_VINYL", "MIDNIGHT_AURORA"] },
+        "securityPasscodeHash": { "type": "string", "description": "Salted SHA-256 hash of user vault passcode" },
+        "securityPasscodeSalt": { "type": "string", "description": "Salt for vault passcode" },
+        "rememberMe": { "type": "boolean" },
+        "lockOnLaunch": { "type": "boolean" },
+        "preferredThemeMode": { "type": "string" },
+        "preferredAccentPalette": { "type": "string" },
+        "preferredCornerDensity": { "type": "string" },
+        "preferredLanguage": { "type": "string" },
+        "onboardingCompleted": { "type": "boolean" },
+        "recentTracks": { "type": "array", "description": "Up to 5 recently played tracks backed up to cloud" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp on update" }
+      },
+      "required": ["userId", "displayName", "handle", "shareActivity", "createdAt", "updatedAt"]
+    },
+    "PublicProfile": {
+      "title": "PublicProfile",
+      "description": "Public non-PII listener profile for friend discovery, stories, DMs, and profile listening info.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "handle": { "type": "string" },
+        "bio": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "discoverable": { "type": "boolean" },
+        "chatPrivacy": { "type": "string", "enum": ["PUBLIC", "FOLLOWERS_ONLY"] },
+        "defaultStoryTheme": { "type": "string", "enum": ["NEON_WAVE", "AMOLED_GOLD", "GLASS_STUDIO", "SUNSET_VINYL", "MIDNIGHT_AURORA"] },
+        "currentTrackTitle": { "type": "string" },
+        "currentArtistName": { "type": "string" },
+        "lastTrackId": { "type": "string" },
+        "lastTrackTitle": { "type": "string" },
+        "lastArtistId": { "type": "string" },
+        "lastArtistName": { "type": "string" },
+        "lastTrackArtworkUrl": { "type": "string" },
+        "lastTrackYoutubeId": { "type": "string" },
+        "lastPlayedAtMillis": { "type": "integer" },
+        "recentTracks": { "type": "array", "description": "Up to 5 recently played track summaries" },
+        "followerCount": { "type": "integer" },
+        "followingCount": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "displayName", "handle", "discoverable", "followerCount", "createdAt", "updatedAt"]
+    },
+    "FollowConnection": {
+      "title": "FollowConnection",
+      "description": "Represents a follower or following relationship between two listeners.",
+      "type": "object",
+      "properties": {
+        "targetUserId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "handle": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["targetUserId", "displayName", "handle", "createdAt", "updatedAt"]
+    },
+    "DirectChatThread": {
+      "title": "DirectChatThread",
+      "description": "1-on-1 direct message conversation summary between two listeners.",
+      "type": "object",
+      "properties": {
+        "chatId": { "type": "string" },
+        "participantIds": { "type": "array" },
+        "participantNames": { "type": "object" },
+        "participantHandles": { "type": "object" },
+        "participantAvatars": { "type": "object" },
+        "lastMessageText": { "type": "string" },
+        "lastSenderId": { "type": "string" },
+        "lastTrackTitle": { "type": "string" },
+        "lastMessageAtMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["chatId", "participantIds", "lastMessageText", "lastSenderId", "lastMessageAtMillis", "createdAt", "updatedAt"]
+    },
+    "DirectChatMessage": {
+      "title": "DirectChatMessage",
+      "description": "Message inside a direct message thread, optionally embedding a shared music track.",
+      "type": "object",
+      "properties": {
+        "chatId": { "type": "string" },
+        "participantIds": { "type": "array" },
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderHandle": { "type": "string" },
+        "senderAvatarUrl": { "type": "string" },
+        "text": { "type": "string" },
+        "trackId": { "type": "string" },
+        "trackTitle": { "type": "string" },
+        "artistName": { "type": "string" },
+        "albumArtUrl": { "type": "string" },
+        "youtubeVideoId": { "type": "string" },
+        "source": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["chatId", "participantIds", "senderId", "senderName", "senderHandle", "text", "createdAt", "updatedAt"]
+    },
+    "SavedTrack": {
+      "title": "SavedTrack",
+      "description": "A track saved in favorites or playlists.",
+      "type": "object",
+      "properties": {
+        "trackId": { "type": "string" },
+        "title": { "type": "string" },
+        "artistId": { "type": "string" },
+        "artistName": { "type": "string" },
+        "albumName": { "type": "string" },
+        "artworkUrl": { "type": "string" },
+        "audioUrl": { "type": "string" },
+        "youtubeVideoId": { "type": "string" },
+        "spotifyUri": { "type": "string" },
+        "durationMs": { "type": "integer" },
+        "source": { "type": "string", "enum": ["YOUTUBE", "ITUNES", "HYBRID"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["trackId", "title", "artistId", "artistName", "durationMs", "source", "createdAt", "updatedAt"]
+    },
+    "Playlist": {
+      "title": "Playlist",
+      "description": "Customizable user playlist with visual theme and track count.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "accentColorHex": { "type": "string" },
+        "coverStyle": { "type": "string", "enum": ["CHROME", "STAGE", "STUDIO", "EMERALD"] },
+        "sharedPublic": { "type": "boolean" },
+        "trackCount": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "title", "accentColorHex", "coverStyle", "sharedPublic", "trackCount", "createdAt", "updatedAt"]
+    },
+    "FollowedArtist": {
+      "title": "FollowedArtist",
+      "description": "Artist followed by the user.",
+      "type": "object",
+      "properties": {
+        "artistId": { "type": "string" },
+        "name": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "genres": { "type": "array" },
+        "source": { "type": "string", "enum": ["YOUTUBE", "ITUNES", "HYBRID"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["artistId", "name", "source", "createdAt", "updatedAt"]
+    },
+    "ActivityFeedItem": {
+      "title": "ActivityFeedItem",
+      "description": "User-published track shares, playlist creations, artist follows, and reposts in the social feed.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userHandle": { "type": "string" },
+        "userAvatarUrl": { "type": "string" },
+        "actionType": { "type": "string", "enum": ["LISTENING", "SHARED_TRACK", "CREATED_PLAYLIST", "FOLLOWED_ARTIST", "REPOSTED_TRACK"] },
+        "trackId": { "type": "string" },
+        "trackTitle": { "type": "string" },
+        "artistId": { "type": "string" },
+        "artistName": { "type": "string" },
+        "albumArtUrl": { "type": "string" },
+        "youtubeVideoId": { "type": "string" },
+        "source": { "type": "string", "enum": ["YOUTUBE", "ITUNES", "HYBRID"] },
+        "note": { "type": "string" },
+        "visibility": { "type": "string", "enum": ["PUBLIC", "FRIENDS"] },
+        "likesCount": { "type": "integer" },
+        "commentsCount": { "type": "integer" },
+        "repostsCount": { "type": "integer" },
+        "repostedFromName": { "type": "string" },
+        "repostedFromHandle": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "userName", "userHandle", "actionType", "trackId", "trackTitle", "artistId", "artistName", "source", "visibility", "likesCount", "createdAt", "updatedAt"]
+    },
+    "ActivityComment": {
+      "title": "ActivityComment",
+      "description": "User comment on a social activity feed post.",
+      "type": "object",
+      "properties": {
+        "activityId": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userHandle": { "type": "string" },
+        "userAvatarUrl": { "type": "string" },
+        "text": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["activityId", "userId", "userName", "userHandle", "text", "createdAt", "updatedAt"]
+    },
+    "ArtistFanPost": {
+      "title": "ArtistFanPost",
+      "description": "Interactive fan wall post or song request on an artist profile page.",
+      "type": "object",
+      "properties": {
+        "artistId": { "type": "string" },
+        "userId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "authorHandle": { "type": "string" },
+        "message": { "type": "string" },
+        "tag": { "type": "string", "enum": ["APPLAUSE", "REQUEST", "CONCERT", "MIX"] },
+        "cheersCount": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["artistId", "userId", "authorName", "authorHandle", "message", "tag", "cheersCount", "createdAt", "updatedAt"]
+    },
+    "MusicStoryItem": {
+      "title": "MusicStoryItem",
+      "description": "24-hour music story card published by a listener.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userHandle": { "type": "string" },
+        "userAvatarUrl": { "type": "string" },
+        "trackId": { "type": "string" },
+        "trackTitle": { "type": "string" },
+        "artistId": { "type": "string" },
+        "artistName": { "type": "string" },
+        "albumArtUrl": { "type": "string" },
+        "youtubeVideoId": { "type": "string" },
+        "source": { "type": "string", "enum": ["YOUTUBE", "ITUNES", "HYBRID"] },
+        "note": { "type": "string" },
+        "cardTheme": { "type": "string", "enum": ["NEON_WAVE", "AMOLED_GOLD", "GLASS_STUDIO", "SUNSET_VINYL", "MIDNIGHT_AURORA"] },
+        "visibility": { "type": "string", "enum": ["PUBLIC", "FRIENDS"] },
+        "expiresAtMillis": { "type": "integer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "userName", "userHandle", "trackId", "trackTitle", "artistId", "artistName", "source", "cardTheme", "visibility", "expiresAtMillis", "createdAt", "updatedAt"]
+    },
+    "UserNotification": {
+      "title": "UserNotification",
+      "description": "Follow, track-like, comment, repost, story, and direct message notifications delivered to a listener inbox.",
+      "type": "object",
+      "properties": {
+        "recipientId": { "type": "string" },
+        "senderId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "senderHandle": { "type": "string" },
+        "senderAvatarUrl": { "type": "string" },
+        "type": { "type": "string", "enum": ["FOLLOW", "LIKE", "COMMENT", "REPOST", "STORY", "MESSAGE"] },
+        "trackId": { "type": "string" },
+        "trackTitle": { "type": "string" },
+        "message": { "type": "string" },
+        "targetType": { "type": "string" },
+        "targetId": { "type": "string" },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["recipientId", "senderId", "senderName", "senderHandle", "type", "message", "read", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Owner-only user profile, security vault passcode, and cloud preferences"
+    },
+    "/users/{userId}/following/{targetUserId}": {
+      "schema": { "$ref": "#/entities/FollowConnection" },
+      "description": "Friends and listeners followed by the user"
+    },
+    "/users/{userId}/followers/{followerId}": {
+      "schema": { "$ref": "#/entities/FollowConnection" },
+      "description": "Followers of the user"
+    },
+    "/users/{userId}/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/UserNotification" },
+      "description": "Social follow, like, comment, repost, story, and direct message notifications"
+    },
+    "/users/{userId}/favorites/{trackId}": {
+      "schema": { "$ref": "#/entities/SavedTrack" },
+      "description": "User favorite tracks"
+    },
+    "/users/{userId}/downloads/{trackId}": {
+      "schema": { "$ref": "#/entities/SavedTrack" },
+      "description": "Legacy cloud-synced offline library track references"
+    },
+    "/users/{userId}/playlists/{playlistId}": {
+      "schema": { "$ref": "#/entities/Playlist" },
+      "description": "User customizable playlists"
+    },
+    "/users/{userId}/playlists/{playlistId}/tracks/{trackId}": {
+      "schema": { "$ref": "#/entities/SavedTrack" },
+      "description": "Tracks inside a user playlist"
+    },
+    "/users/{userId}/followed_artists/{artistId}": {
+      "schema": { "$ref": "#/entities/FollowedArtist" },
+      "description": "Artists followed by the user"
+    },
+    "/public_profiles/{userId}": {
+      "schema": { "$ref": "#/entities/PublicProfile" },
+      "description": "Public non-PII listener discovery profiles"
+    },
+    "/activity_feed/{activityId}": {
+      "schema": { "$ref": "#/entities/ActivityFeedItem" },
+      "description": "Social track sharing and repost feed"
+    },
+    "/activity_feed/{activityId}/comments/{commentId}": {
+      "schema": { "$ref": "#/entities/ActivityComment" },
+      "description": "Comments on a social activity post"
+    },
+    "/artists/{artistId}/fan_posts/{postId}": {
+      "schema": { "$ref": "#/entities/ArtistFanPost" },
+      "description": "Interactive fan wall posts on artist profiles"
+    },
+    "/stories/{storyId}": {
+      "schema": { "$ref": "#/entities/MusicStoryItem" },
+      "description": "24-hour customizable music story cards"
+    },
+    "/chats/{chatId}": {
+      "schema": { "$ref": "#/entities/DirectChatThread" },
+      "description": "1-on-1 direct message thread summary"
+    },
+    "/chats/{chatId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/DirectChatMessage" },
+      "description": "Direct messages inside a chat thread"
+    }
+  }
+}
