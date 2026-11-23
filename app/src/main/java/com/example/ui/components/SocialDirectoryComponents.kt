@@ -54,7 +54,8 @@ fun ListenerDirectoryCard(
   isFollowing: Boolean,
   onOpenProfile: () -> Unit,
   onToggleFollow: () -> Unit,
-  onOpenChat: () -> Unit = {}
+  onOpenChat: () -> Unit = {},
+  isFollowRequestPending: Boolean = false
 ) {
   val lastTrackTitle = person.lastTrackTitle.ifBlank { person.currentTrackTitle }
   val hasRecentActivity = lastTrackTitle.isNotBlank() || person.recentTracks.isNotEmpty()
@@ -137,6 +138,7 @@ fun ListenerDirectoryCard(
       )
       StudioFollowToggleButton(
         isFollowing = isFollowing,
+        isPending = isFollowRequestPending,
         onClick = onToggleFollow,
         modifier = Modifier.testTag("follow_user_btn_${person.userId}")
       )

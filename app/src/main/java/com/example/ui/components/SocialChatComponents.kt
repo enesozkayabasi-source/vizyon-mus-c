@@ -1,5 +1,9 @@
 package com.example.ui.components
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -29,12 +33,18 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
+import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Flag
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Schedule
+import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -51,11 +61,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -64,15 +77,20 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import com.example.R
+import com.example.audio.VoiceMessageAudioHelper
 import com.example.model.ChatPrivacy
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import com.example.model.DirectChatMessage
 import com.example.model.DirectChatThread
 import com.example.model.FollowConnection
@@ -312,8 +330,17 @@ fun DirectChatThreadSheet(
   onSendMessage: (String, MusicTrack?) -> Unit,
   onPlayTrack: (MusicTrack) -> Unit,
   onDeleteChatThread: () -> Unit = {},
-  onDeleteMessage: (DirectChatMessage) -> Unit = {}
+  onDeleteMessage: (DirectChatMessage) -> Unit = {},
+  hasPendingMessageRequest: Boolean = false,
+  onSendVoiceMessage: (String, Long) -> Unit = { _, _ -> },
+  onSendMessageRequest: (String) -> Unit = {},
+  onSendVoiceMessageRequest: (String, Long) -> Unit = { _, _ -> },
+  onBlockUser: () -> Unit = {},
+  onReportUser: () -> Unit = {},
+  onNotifyMessage: (String) -> Unit = {}
 ) {
+  val context = LocalContext.current
+  val scope = rememberCoroutineScope()
   val selfUid = currentUserId ?: "local"
   val haptic = LocalHapticFeedback.current
   var messageInput by remember { mutableStateOf("") }
@@ -321,6 +348,59 @@ fun DirectChatThreadSheet(
   var showTrackPicker by remember { mutableStateOf(false) }
   var pendingDeleteThreadConfirm by remember { mutableStateOf(false) }
   var pendingDeleteMessage by remember { mutableStateOf<DirectChatMessage?>(null) }
+
+  // Voice recording & playback state (max 30 seconds)
+  var isRecordingVoice by remember { mutableStateOf(false) }
+  var recordingElapsedMs by remember { mutableLongStateOf(0L) }
+  var recordedPreviewClip by remember { mutableStateOf<VoiceMessageAudioHelper.RecordedVoiceClip?>(null) }
+  var playingVoiceKey by remember { mutableStateOf<String?>(null) }
+
+  fun beginVoiceRecording() {
+    recordedPreviewClip?.let { VoiceMessageAudioHelper.discardActiveRecording(it.filePath) }
+    recordedPreviewClip = null
+    VoiceMessageAudioHelper.stopPlayback()
+    playingVoiceKey = null
+    val res = VoiceMessageAudioHelper.startRecording(context)
+    if (res.isSuccess) {
+      recordingElapsedMs = 0L
+      isRecordingVoice = true
+    } else {
+      onNotifyMessage(res.exceptionOrNull()?.localizedMessage ?: "Ses kaydı başlatılamadı.")
+    }
+  }
+
+  val recordAudioPermissionLauncher =
+    rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+      if (granted) {
+        beginVoiceRecording()
+      } else {
+        onNotifyMessage("Sesli mesaj kaydetmek için mikrofon izni gereklidir.")
+      }
+    }
+
+  LaunchedEffect(isRecordingVoice) {
+    if (!isRecordingVoice) return@LaunchedEffect
+    val startedAt = System.currentTimeMillis()
+    while (isRecordingVoice) {
+      val elapsed = System.currentTimeMillis() - startedAt
+      recordingElapsedMs = elapsed.coerceAtMost(VoiceMessageAudioHelper.MAX_DURATION_MS)
+      if (elapsed >= VoiceMessageAudioHelper.MAX_DURATION_MS) {
+        isRecordingVoice = false
+        VoiceMessageAudioHelper.stopRecordingAndEncode(elapsed)
+          .onSuccess { clip -> recordedPreviewClip = clip }
+          .onFailure { err -> onNotifyMessage(err.localizedMessage ?: "Ses kaydı tamamlanamadı.") }
+        break
+      }
+      delay(200L)
+    }
+  }
+
+  DisposableEffect(Unit) {
+    onDispose {
+      VoiceMessageAudioHelper.stopPlayback()
+      VoiceMessageAudioHelper.discardActiveRecording(recordedPreviewClip?.filePath)
+    }
+  }
 
   val trackOptions = remember(currentTrack, candidateTracks) {
     (listOfNotNull(currentTrack) + candidateTracks).distinctBy { it.trackId }.take(8)
@@ -354,7 +434,7 @@ fun DirectChatThreadSheet(
     ) {
       Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         modifier = Modifier.fillMaxWidth()
       ) {
         StudioAvatar(
@@ -374,9 +454,26 @@ fun DirectChatThreadSheet(
             text = "${peer.handle.ifBlank { "@vizyon" }} • ${privacy.label}",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.primary,
-            maxLines = 1
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
           )
         }
+        StudioCircleIconButton(
+          icon = Icons.Rounded.Flag,
+          contentDescription = "Kullanıcıyı şikayet et",
+          onClick = onReportUser,
+          size = 48.dp,
+          tint = MaterialTheme.colorScheme.secondary,
+          modifier = Modifier.testTag("chat_report_user_btn")
+        )
+        StudioCircleIconButton(
+          icon = Icons.Rounded.Block,
+          contentDescription = "Kullanıcıyı engelle",
+          onClick = onBlockUser,
+          size = 48.dp,
+          tint = MaterialTheme.colorScheme.error,
+          modifier = Modifier.testTag("chat_block_user_btn")
+        )
         StudioCircleIconButton(
           icon = Icons.Rounded.DeleteOutline,
           contentDescription = "Sohbeti sil",
@@ -396,18 +493,28 @@ fun DirectChatThreadSheet(
 
       if (blockedByPrivacy) {
         Surface(
-          color = MaterialTheme.colorScheme.error.copy(alpha = 0.14f),
+          color =
+            if (hasPendingMessageRequest) MaterialTheme.colorScheme.secondary.copy(alpha = 0.14f)
+            else MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
           shape = RoundedCornerShape(14.dp),
-          modifier = Modifier.fillMaxWidth()
+          modifier = Modifier.fillMaxWidth().testTag("direct_chat_request_banner")
         ) {
           Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.padding(12.dp)
           ) {
-            Icon(Icons.Rounded.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+            Icon(
+              imageVector = if (hasPendingMessageRequest) Icons.Rounded.Schedule else Icons.Rounded.Lock,
+              contentDescription = null,
+              tint = if (hasPendingMessageRequest) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.primary
+            )
             Text(
-              text = "${peer.displayName} yalnızca takipçilerinden mesaj kabul ediyor. Mesaj göndermek için profilini takip et.",
+              text =
+                if (hasPendingMessageRequest)
+                  "${peer.displayName} kullanıcısına mesaj isteği gönderildi. Onaylandığında sohbet açılacak."
+                else
+                  "${peer.displayName} yalnızca takipçilerinden doğrudan mesaj alıyor. Mesaj veya sesli mesaj isteği gönderebilirsin.",
               style = MaterialTheme.typography.labelMedium,
               color = MaterialTheme.colorScheme.onSurface
             )
@@ -433,7 +540,9 @@ fun DirectChatThreadSheet(
             if (messages.isEmpty()) {
               Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxWidth().padding(32.dp)) {
                 Text(
-                  text = "İlk mesajı veya sevdiğin bir şarkıyı ${peer.displayName} ile paylaş!",
+                  text =
+                    if (blockedByPrivacy) "Henüz mesaj yok. Aşağıdan ${peer.displayName} için mesaj isteği gönderebilirsin."
+                    else "İlk mesajı, sesli mesajı veya sevdiğin bir şarkıyı ${peer.displayName} ile paylaş!",
                   style = MaterialTheme.typography.bodyMedium,
                   color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -510,6 +619,67 @@ fun DirectChatThreadSheet(
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
                       ) {
+                        if (msg.isVoiceMessage) {
+                          val voiceKey = "msg_${msg.id}"
+                          val isPlayingThis = playingVoiceKey == voiceKey
+                          Surface(
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth().testTag("voice_msg_bubble_${msg.id}")
+                          ) {
+                            Row(
+                              verticalAlignment = Alignment.CenterVertically,
+                              horizontalArrangement = Arrangement.spacedBy(8.dp),
+                              modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                            ) {
+                              StudioCircleIconButton(
+                                icon = if (isPlayingThis) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+                                contentDescription = if (isPlayingThis) "Sesli mesajı durdur" else "Sesli mesajı çal",
+                                size = 48.dp,
+                                highlighted = true,
+                                onClick = {
+                                  if (isPlayingThis) {
+                                    VoiceMessageAudioHelper.stopPlayback()
+                                    playingVoiceKey = null
+                                  } else {
+                                    playingVoiceKey = voiceKey
+                                    VoiceMessageAudioHelper.playVoiceClip(
+                                      context = context,
+                                      key = voiceKey,
+                                      audioBase64 = msg.audioBase64,
+                                      onCompleted = {
+                                        if (playingVoiceKey == voiceKey) playingVoiceKey = null
+                                      },
+                                      onError = { err ->
+                                        if (playingVoiceKey == voiceKey) playingVoiceKey = null
+                                        onNotifyMessage(err)
+                                      }
+                                    )
+                                  }
+                                },
+                                modifier = Modifier.testTag("play_voice_msg_${msg.id}")
+                              )
+                              Icon(
+                                Icons.Rounded.GraphicEq,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp)
+                              )
+                              Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                  text = "Sesli Mesaj",
+                                  style = MaterialTheme.typography.labelMedium,
+                                  fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                  text = VoiceMessageAudioHelper.formatDurationMmSs(msg.audioDurationMs),
+                                  style = MaterialTheme.typography.labelSmall,
+                                  color = MaterialTheme.colorScheme.primary
+                                )
+                              }
+                            }
+                          }
+                        }
                         if (track != null) {
                           Surface(
                             color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
@@ -565,7 +735,7 @@ fun DirectChatThreadSheet(
                             }
                           }
                         }
-                        if (msg.text.isNotBlank()) {
+                        if (msg.text.isNotBlank() && !msg.isVoiceMessage) {
                           Text(
                             text = msg.text,
                             style = MaterialTheme.typography.bodyMedium,
@@ -600,7 +770,7 @@ fun DirectChatThreadSheet(
         }
       }
 
-      AnimatedVisibility(visible = showTrackPicker && trackOptions.isNotEmpty()) {
+      AnimatedVisibility(visible = showTrackPicker && trackOptions.isNotEmpty() && !blockedByPrivacy) {
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
           items(trackOptions, key = { "dm_track_${it.trackId}" }) { tr ->
             StudioInteractiveChip(
@@ -645,46 +815,230 @@ fun DirectChatThreadSheet(
         }
       }
 
-      Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
-      ) {
-        StudioCircleIconButton(
-          icon = Icons.Rounded.MusicNote,
-          contentDescription = "Şarkı ekle",
-          highlighted = attachedTrack != null || showTrackPicker,
-          onClick = { showTrackPicker = !showTrackPicker },
-          size = 48.dp,
-          modifier = Modifier.testTag("direct_chat_attach_track_btn")
-        )
-        OutlinedTextField(
-          value = messageInput,
-          onValueChange = { if (it.length <= 600) messageInput = it },
-          placeholder = { Text("Mesaj yaz veya şarkı ekle...") },
-          maxLines = 3,
-          shape = RoundedCornerShape(18.dp),
-          colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = MaterialTheme.colorScheme.primary,
-            unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
-          ),
-          modifier = Modifier.weight(1f).testTag("direct_chat_input")
-        )
-        StudioCircleIconButton(
-          icon = Icons.AutoMirrored.Rounded.Send,
-          contentDescription = "Gönder",
-          highlighted = !blockedByPrivacy && (messageInput.isNotBlank() || attachedTrack != null),
-          onClick = {
-            if (!blockedByPrivacy && (messageInput.isNotBlank() || attachedTrack != null)) {
-              onSendMessage(messageInput, attachedTrack)
-              messageInput = ""
-              attachedTrack = null
-              showTrackPicker = false
+      // Live Recording Bar or Recorded Voice Preview Bar (Max 30s)
+      if (isRecordingVoice) {
+        Surface(
+          color = MaterialTheme.colorScheme.error.copy(alpha = 0.16f),
+          shape = RoundedCornerShape(16.dp),
+          modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).testTag("voice_recording_bar")
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+          ) {
+            Icon(Icons.Rounded.Mic, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+            Column(modifier = Modifier.weight(1f)) {
+              Text(
+                text = "Ses Kaydediliyor • ${VoiceMessageAudioHelper.formatDurationMmSs(recordingElapsedMs)} / 0:30",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.error
+              )
+              Text(
+                text = "Bitirmek ve önizlemek için Durdur'a dokun",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+              )
             }
-          },
-          size = 48.dp,
-          modifier = Modifier.testTag("direct_chat_send_btn")
-        )
+            StudioCircleIconButton(
+              icon = Icons.Rounded.Close,
+              contentDescription = "Kaydı iptal et",
+              onClick = {
+                isRecordingVoice = false
+                VoiceMessageAudioHelper.discardActiveRecording()
+              },
+              size = 48.dp,
+              modifier = Modifier.testTag("voice_record_cancel_btn")
+            )
+            StudioCircleIconButton(
+              icon = Icons.Rounded.Stop,
+              contentDescription = "Kaydı durdur ve önizle",
+              highlighted = true,
+              tint = MaterialTheme.colorScheme.error,
+              onClick = {
+                val elapsed = recordingElapsedMs
+                isRecordingVoice = false
+                scope.launch {
+                  VoiceMessageAudioHelper.stopRecordingAndEncode(elapsed)
+                    .onSuccess { clip -> recordedPreviewClip = clip }
+                    .onFailure { err -> onNotifyMessage(err.localizedMessage ?: "Ses kaydı alınamadı.") }
+                }
+              },
+              size = 48.dp,
+              modifier = Modifier.testTag("voice_record_stop_btn")
+            )
+          }
+        }
+      } else if (recordedPreviewClip != null) {
+        val clip = recordedPreviewClip!!
+        val previewKey = "preview_${clip.filePath}"
+        val isPlayingPreview = playingVoiceKey == previewKey
+        Surface(
+          color = MaterialTheme.colorScheme.primary.copy(alpha = 0.14f),
+          shape = RoundedCornerShape(16.dp),
+          modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).testTag("voice_preview_bar")
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+          ) {
+            StudioCircleIconButton(
+              icon = if (isPlayingPreview) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+              contentDescription = if (isPlayingPreview) "Önizlemeyi durdur" else "Ses kaydını dinle",
+              highlighted = true,
+              onClick = {
+                if (isPlayingPreview) {
+                  VoiceMessageAudioHelper.stopPlayback()
+                  playingVoiceKey = null
+                } else {
+                  playingVoiceKey = previewKey
+                  VoiceMessageAudioHelper.playVoiceClip(
+                    context = context,
+                    key = previewKey,
+                    filePath = clip.filePath,
+                    audioBase64 = clip.base64,
+                    onCompleted = {
+                      if (playingVoiceKey == previewKey) playingVoiceKey = null
+                    },
+                    onError = { err ->
+                      if (playingVoiceKey == previewKey) playingVoiceKey = null
+                      onNotifyMessage(err)
+                    }
+                  )
+                }
+              },
+              size = 48.dp,
+              modifier = Modifier.testTag("voice_preview_play_btn")
+            )
+            Column(modifier = Modifier.weight(1f)) {
+              Text(
+                text = "Sesli Mesaj Önizleme",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold
+              )
+              Text(
+                text = VoiceMessageAudioHelper.formatDurationMmSs(clip.durationMs),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary
+              )
+            }
+            StudioCircleIconButton(
+              icon = Icons.Rounded.DeleteOutline,
+              contentDescription = "Ses kaydını sil",
+              tint = MaterialTheme.colorScheme.error,
+              onClick = {
+                VoiceMessageAudioHelper.stopPlayback()
+                playingVoiceKey = null
+                VoiceMessageAudioHelper.discardActiveRecording(clip.filePath)
+                recordedPreviewClip = null
+              },
+              size = 48.dp,
+              modifier = Modifier.testTag("voice_preview_discard_btn")
+            )
+            StudioCircleIconButton(
+              icon = Icons.AutoMirrored.Rounded.Send,
+              contentDescription = if (blockedByPrivacy) "Sesli Mesaj İsteği Gönder" else "Sesli Mesajı Gönder",
+              highlighted = !hasPendingMessageRequest,
+              onClick = {
+                if (hasPendingMessageRequest) return@StudioCircleIconButton
+                VoiceMessageAudioHelper.stopPlayback()
+                playingVoiceKey = null
+                if (blockedByPrivacy) {
+                  onSendVoiceMessageRequest(clip.base64, clip.durationMs)
+                } else {
+                  onSendVoiceMessage(clip.base64, clip.durationMs)
+                }
+                VoiceMessageAudioHelper.discardActiveRecording(clip.filePath)
+                recordedPreviewClip = null
+              },
+              size = 48.dp,
+              modifier = Modifier.testTag("voice_preview_send_btn")
+            )
+          }
+        }
+      } else {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
+        ) {
+          if (!blockedByPrivacy) {
+            StudioCircleIconButton(
+              icon = Icons.Rounded.MusicNote,
+              contentDescription = "Şarkı ekle",
+              highlighted = attachedTrack != null || showTrackPicker,
+              onClick = { showTrackPicker = !showTrackPicker },
+              size = 48.dp,
+              modifier = Modifier.testTag("direct_chat_attach_track_btn")
+            )
+          }
+          StudioCircleIconButton(
+            icon = Icons.Rounded.Mic,
+            contentDescription = "Sesli mesaj kaydet (maks 30 sn)",
+            highlighted = false,
+            onClick = {
+              if (blockedByPrivacy && hasPendingMessageRequest) {
+                onNotifyMessage("Bu kullanıcıya zaten bekleyen bir mesaj isteğin var.")
+                return@StudioCircleIconButton
+              }
+              val granted =
+                ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+                  PackageManager.PERMISSION_GRANTED
+              if (granted) {
+                beginVoiceRecording()
+              } else {
+                recordAudioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+              }
+            },
+            size = 48.dp,
+            modifier = Modifier.testTag("direct_chat_voice_record_btn")
+          )
+          OutlinedTextField(
+            value = messageInput,
+            onValueChange = { if (it.length <= 600) messageInput = it },
+            enabled = !(blockedByPrivacy && hasPendingMessageRequest),
+            placeholder = {
+              Text(
+                when {
+                  blockedByPrivacy && hasPendingMessageRequest -> "Mesaj isteği bekleniyor..."
+                  blockedByPrivacy -> "Mesaj isteği yaz..."
+                  else -> "Mesaj yaz veya şarkı ekle..."
+                }
+              )
+            },
+            maxLines = 3,
+            shape = RoundedCornerShape(18.dp),
+            colors = OutlinedTextFieldDefaults.colors(
+              focusedBorderColor = MaterialTheme.colorScheme.primary,
+              unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)
+            ),
+            modifier = Modifier.weight(1f).testTag("direct_chat_input")
+          )
+          StudioCircleIconButton(
+            icon = Icons.AutoMirrored.Rounded.Send,
+            contentDescription = if (blockedByPrivacy) "Mesaj İsteği Gönder" else "Gönder",
+            highlighted =
+              !(blockedByPrivacy && hasPendingMessageRequest) &&
+                (messageInput.isNotBlank() || (!blockedByPrivacy && attachedTrack != null)),
+            onClick = {
+              if (blockedByPrivacy) {
+                if (!hasPendingMessageRequest && messageInput.isNotBlank()) {
+                  onSendMessageRequest(messageInput.trim())
+                  messageInput = ""
+                }
+              } else if (messageInput.isNotBlank() || attachedTrack != null) {
+                onSendMessage(messageInput, attachedTrack)
+                messageInput = ""
+                attachedTrack = null
+                showTrackPicker = false
+              }
+            },
+            size = 48.dp,
+            modifier = Modifier.testTag("direct_chat_send_btn")
+          )
+        }
       }
     }
   }
@@ -706,7 +1060,12 @@ fun DirectChatThreadSheet(
       title = { Text("Mesajı Sil", fontWeight = FontWeight.Bold) },
       text = {
         val preview =
-          msg.text.ifBlank { if (msg.trackTitle.isNotBlank()) "♪ ${msg.trackTitle}" else "Bu mesaj" }
+          when {
+            msg.isVoiceMessage -> "Sesli mesaj (${VoiceMessageAudioHelper.formatDurationMmSs(msg.audioDurationMs)})"
+            msg.text.isNotBlank() -> msg.text
+            msg.trackTitle.isNotBlank() -> "♪ ${msg.trackTitle}"
+            else -> "Bu mesaj"
+          }
         Text("“$preview” mesajını kalıcı olarak silmek istiyor musun?")
       },
       confirmButton = {

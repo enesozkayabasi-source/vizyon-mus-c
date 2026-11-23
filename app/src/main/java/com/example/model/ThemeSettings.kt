@@ -67,5 +67,7 @@ data class AppAppearanceConfig(
   val lastCatalogRefreshMs: Long = 0L,
   val rememberMe: Boolean = true,
   val lockOnLaunch: Boolean = false,
-  val hasVaultPasscode: Boolean = false
+  val hasVaultPasscode: Boolean = false,
+  val requireFollowApproval: Boolean = false,
+  val backgroundNotifServiceEnabled: Boolean = true
 )

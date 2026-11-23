@@ -35,6 +35,7 @@ import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.DoneAll
 import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.MarkEmailUnread
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MusicNote
@@ -363,9 +364,17 @@ fun NotificationInboxSheet(
               NotificationInboxFilter.ALL -> allList.size
               NotificationInboxFilter.UNREAD -> unreadCount
               NotificationInboxFilter.MESSAGE ->
-                allList.count { NotificationType.fromRaw(it.type) == NotificationType.MESSAGE }
+                allList.count {
+                  val t = NotificationType.fromRaw(it.type)
+                  t == NotificationType.MESSAGE ||
+                    t == NotificationType.VOICE_MESSAGE ||
+                    t == NotificationType.MESSAGE_REQUEST
+                }
               NotificationInboxFilter.FOLLOW ->
-                allList.count { NotificationType.fromRaw(it.type) == NotificationType.FOLLOW }
+                allList.count {
+                  val t = NotificationType.fromRaw(it.type)
+                  t == NotificationType.FOLLOW || t == NotificationType.FOLLOW_REQUEST
+                }
               NotificationInboxFilter.LIKE ->
                 allList.count { NotificationType.fromRaw(it.type) == NotificationType.LIKE }
               NotificationInboxFilter.SOCIAL ->
@@ -405,9 +414,17 @@ fun NotificationInboxSheet(
                 NotificationInboxFilter.ALL -> allList
                 NotificationInboxFilter.UNREAD -> allList.filter { !it.read }
                 NotificationInboxFilter.MESSAGE ->
-                  allList.filter { NotificationType.fromRaw(it.type) == NotificationType.MESSAGE }
+                  allList.filter {
+                    val t = NotificationType.fromRaw(it.type)
+                    t == NotificationType.MESSAGE ||
+                      t == NotificationType.VOICE_MESSAGE ||
+                      t == NotificationType.MESSAGE_REQUEST
+                  }
                 NotificationInboxFilter.FOLLOW ->
-                  allList.filter { NotificationType.fromRaw(it.type) == NotificationType.FOLLOW }
+                  allList.filter {
+                    val t = NotificationType.fromRaw(it.type)
+                    t == NotificationType.FOLLOW || t == NotificationType.FOLLOW_REQUEST
+                  }
                 NotificationInboxFilter.LIKE ->
                   allList.filter { NotificationType.fromRaw(it.type) == NotificationType.LIKE }
                 NotificationInboxFilter.SOCIAL ->
@@ -621,8 +638,10 @@ private fun SwipeableNotificationCard(
     when (nType) {
       NotificationType.LIKE -> MaterialTheme.colorScheme.secondary
       NotificationType.REPOST, NotificationType.STORY -> MaterialTheme.colorScheme.tertiary
-      NotificationType.MESSAGE -> MaterialTheme.colorScheme.secondary
-      NotificationType.FOLLOW -> MaterialTheme.colorScheme.primary
+      NotificationType.MESSAGE,
+      NotificationType.VOICE_MESSAGE,
+      NotificationType.MESSAGE_REQUEST -> MaterialTheme.colorScheme.secondary
+      NotificationType.FOLLOW, NotificationType.FOLLOW_REQUEST -> MaterialTheme.colorScheme.primary
       NotificationType.COMMENT -> MaterialTheme.colorScheme.primary
     }
 
@@ -752,9 +771,10 @@ private fun SwipeableNotificationCard(
                     NotificationType.LIKE -> Icons.Rounded.Favorite
                     NotificationType.COMMENT -> Icons.Rounded.ChatBubble
                     NotificationType.REPOST -> Icons.Rounded.Repeat
-                    NotificationType.FOLLOW -> Icons.Rounded.PersonAdd
+                    NotificationType.FOLLOW, NotificationType.FOLLOW_REQUEST -> Icons.Rounded.PersonAdd
                     NotificationType.STORY -> Icons.Rounded.AutoAwesome
-                    NotificationType.MESSAGE -> Icons.Rounded.ChatBubble
+                    NotificationType.VOICE_MESSAGE -> Icons.Rounded.GraphicEq
+                    NotificationType.MESSAGE, NotificationType.MESSAGE_REQUEST -> Icons.Rounded.ChatBubble
                   },
                 contentDescription = null,
                 tint = Color.White,

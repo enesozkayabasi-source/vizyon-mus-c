@@ -11,7 +11,8 @@
         "bio": { "type": "string", "description": "Short user bio" },
         "photoUrl": { "type": "string", "description": "Avatar URL or compressed JPEG data URI" },
         "favoriteGenres": { "type": "array", "description": "List of preferred music genres" },
-        "shareActivity": { "type": "boolean", "description": "Whether activity is shared" },
+        "shareActivity": { "type": "boolean", "description": "Whether listening activity is shared publicly" },
+        "requireFollowApproval": { "type": "boolean", "description": "Whether new followers require manual approval" },
         "chatPrivacy": { "type": "string", "enum": ["PUBLIC", "FOLLOWERS_ONLY"] },
         "defaultStoryTheme": { "type": "string", "enum": ["NEON_WAVE", "AMOLED_GOLD", "GLASS_STUDIO", "SUNSET_VINYL", "MIDNIGHT_AURORA"] },
         "securityPasscodeHash": { "type": "string", "description": "Salted SHA-256 hash of user vault passcode" },
@@ -40,6 +41,8 @@
         "bio": { "type": "string" },
         "photoUrl": { "type": "string" },
         "discoverable": { "type": "boolean" },
+        "shareActivity": { "type": "boolean" },
+        "requireFollowApproval": { "type": "boolean" },
         "chatPrivacy": { "type": "string", "enum": ["PUBLIC", "FOLLOWERS_ONLY"] },
         "defaultStoryTheme": { "type": "string", "enum": ["NEON_WAVE", "AMOLED_GOLD", "GLASS_STUDIO", "SUNSET_VINYL", "MIDNIGHT_AURORA"] },
         "currentTrackTitle": { "type": "string" },
@@ -104,6 +107,9 @@
         "senderHandle": { "type": "string" },
         "senderAvatarUrl": { "type": "string" },
         "text": { "type": "string" },
+        "messageType": { "type": "string", "enum": ["TEXT", "TRACK", "VOICE"] },
+        "audioBase64": { "type": "string" },
+        "audioDurationMs": { "type": "integer" },
         "trackId": { "type": "string" },
         "trackTitle": { "type": "string" },
         "artistName": { "type": "string" },
@@ -265,7 +271,7 @@
         "senderName": { "type": "string" },
         "senderHandle": { "type": "string" },
         "senderAvatarUrl": { "type": "string" },
-        "type": { "type": "string", "enum": ["FOLLOW", "LIKE", "COMMENT", "REPOST", "STORY", "MESSAGE"] },
+        "type": { "type": "string", "enum": ["FOLLOW", "LIKE", "COMMENT", "REPOST", "STORY", "MESSAGE", "FOLLOW_REQUEST", "MESSAGE_REQUEST", "VOICE_MESSAGE"] },
         "trackId": { "type": "string" },
         "trackTitle": { "type": "string" },
         "message": { "type": "string" },
@@ -276,6 +282,86 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["recipientId", "senderId", "senderName", "senderHandle", "type", "message", "read", "createdAt", "updatedAt"]
+    },
+    "BlockedUser": {
+      "title": "BlockedUser",
+      "description": "A user blocked by the account owner.",
+      "type": "object",
+      "properties": {
+        "blockedUserId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "handle": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["blockedUserId", "displayName", "handle", "createdAt", "updatedAt"]
+    },
+    "UserReport": {
+      "title": "UserReport",
+      "description": "User safety report for abuse, harassment, or inappropriate content.",
+      "type": "object",
+      "properties": {
+        "reporterId": { "type": "string" },
+        "targetUserId": { "type": "string" },
+        "targetType": { "type": "string" },
+        "targetId": { "type": "string" },
+        "reason": { "type": "string", "enum": ["SPAM", "HARASSMENT", "INAPPROPRIATE", "IMPERSONATION", "OTHER"] },
+        "details": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["reporterId", "targetUserId", "targetType", "targetId", "reason", "createdAt", "updatedAt"]
+    },
+    "FollowRequest": {
+      "title": "FollowRequest",
+      "description": "Incoming follow approval request.",
+      "type": "object",
+      "properties": {
+        "requesterId": { "type": "string" },
+        "requesterName": { "type": "string" },
+        "requesterHandle": { "type": "string" },
+        "requesterAvatarUrl": { "type": "string" },
+        "recipientId": { "type": "string" },
+        "status": { "type": "string", "enum": ["PENDING", "ACCEPTED", "REJECTED"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["requesterId", "requesterName", "requesterHandle", "recipientId", "status", "createdAt", "updatedAt"]
+    },
+    "MessageRequest": {
+      "title": "MessageRequest",
+      "description": "Incoming direct message request from a non-follower.",
+      "type": "object",
+      "properties": {
+        "requesterId": { "type": "string" },
+        "requesterName": { "type": "string" },
+        "requesterHandle": { "type": "string" },
+        "requesterAvatarUrl": { "type": "string" },
+        "recipientId": { "type": "string" },
+        "previewText": { "type": "string" },
+        "messageType": { "type": "string", "enum": ["TEXT", "TRACK", "VOICE"] },
+        "audioBase64": { "type": "string" },
+        "audioDurationMs": { "type": "integer" },
+        "status": { "type": "string", "enum": ["PENDING", "ACCEPTED", "REJECTED"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["requesterId", "requesterName", "requesterHandle", "recipientId", "previewText", "status", "createdAt", "updatedAt"]
+    },
+    "OutgoingRequest": {
+      "title": "OutgoingRequest",
+      "description": "Sender-side pending request marker.",
+      "type": "object",
+      "properties": {
+        "requesterId": { "type": "string" },
+        "recipientId": { "type": "string" },
+        "requestType": { "type": "string", "enum": ["FOLLOW", "MESSAGE"] },
+        "status": { "type": "string", "enum": ["PENDING", "ACCEPTED", "REJECTED"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["requesterId", "recipientId", "requestType", "status", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -294,6 +380,22 @@
     "/users/{userId}/notifications/{notificationId}": {
       "schema": { "$ref": "#/entities/UserNotification" },
       "description": "Social follow, like, comment, repost, story, and direct message notifications"
+    },
+    "/users/{userId}/blocked_users/{blockedUserId}": {
+      "schema": { "$ref": "#/entities/BlockedUser" },
+      "description": "Users blocked by this account"
+    },
+    "/users/{userId}/follow_requests/{requesterId}": {
+      "schema": { "$ref": "#/entities/FollowRequest" },
+      "description": "Incoming follow requests"
+    },
+    "/users/{userId}/message_requests/{requesterId}": {
+      "schema": { "$ref": "#/entities/MessageRequest" },
+      "description": "Incoming direct message requests"
+    },
+    "/users/{userId}/outgoing_requests/{requestKey}": {
+      "schema": { "$ref": "#/entities/OutgoingRequest" },
+      "description": "Sender-side pending request tracking"
     },
     "/users/{userId}/favorites/{trackId}": {
       "schema": { "$ref": "#/entities/SavedTrack" },
@@ -342,6 +444,10 @@
     "/chats/{chatId}/messages/{messageId}": {
       "schema": { "$ref": "#/entities/DirectChatMessage" },
       "description": "Direct messages inside a chat thread"
+    },
+    "/user_reports/{reportId}": {
+      "schema": { "$ref": "#/entities/UserReport" },
+      "description": "User safety and content moderation reports"
     }
   }
 }

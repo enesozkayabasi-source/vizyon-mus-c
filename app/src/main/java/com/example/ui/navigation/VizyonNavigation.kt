@@ -74,6 +74,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.compose.animation.AnimatedVisibility
+import com.example.model.DirectMessageType
 import com.example.model.MusicStoryItem
 import com.example.model.MusicTrack
 import com.example.model.PlaylistCoverStyle
@@ -83,12 +84,16 @@ import com.example.model.sanitizeFirestoreId
 import com.example.notifications.VizyonNotificationHelper
 import com.example.ui.components.AddToPlaylistDialog
 import com.example.ui.components.AnimatedWaveformBackdrop
+import com.example.ui.components.BlockUserConfirmDialog
+import com.example.ui.components.DataSafetyModalSheet
 import com.example.ui.components.DirectChatThreadSheet
 import com.example.ui.components.FollowConnectionsModalSheet
 import com.example.ui.components.InAppNotificationBubble
 import com.example.ui.components.MiniPlayerBar
 import com.example.ui.components.NotificationInboxSheet
 import com.example.ui.components.NowPlayingModal
+import com.example.ui.components.ReportUserDialog
+import com.example.ui.components.RequestsModalSheet
 import com.example.ui.components.ShareTrackDialog
 import com.example.ui.components.StoryStudioSheet
 import com.example.ui.components.StoryViewerOverlay
@@ -103,6 +108,20 @@ import com.example.ui.screens.SocialFeedScreen
 import com.example.ui.viewmodel.HomeCatalogData
 import com.example.ui.viewmodel.VizyonMainViewModel
 import kotlinx.serialization.Serializable
+
+private data class BlockTargetUser(
+  val userId: String,
+  val displayName: String,
+  val handle: String,
+  val avatarUrl: String
+)
+
+private data class ReportTargetUser(
+  val targetUserId: String,
+  val targetType: String,
+  val targetId: String,
+  val displayName: String
+)
 
 @Serializable object DiscoverRoute
 @Serializable object SearchRoute
@@ -178,9 +197,18 @@ fun VizyonMainShell(
   val isVaultLocked by viewModel.isVaultLocked.collectAsStateWithLifecycle()
   val vaultUnlockError by viewModel.vaultUnlockError.collectAsStateWithLifecycle()
   val activeInAppBubble by viewModel.activeInAppBubble.collectAsStateWithLifecycle()
+  val blockedUsersState by viewModel.blockedUsersState.collectAsStateWithLifecycle()
+  val incomingFollowRequestsState by viewModel.incomingFollowRequestsState.collectAsStateWithLifecycle()
+  val incomingMessageRequestsState by viewModel.incomingMessageRequestsState.collectAsStateWithLifecycle()
+  val outgoingRequestKeys by viewModel.outgoingRequestKeysState.collectAsStateWithLifecycle()
+  val pendingRequestsCount by viewModel.pendingRequestsCount.collectAsStateWithLifecycle()
 
   var showNowPlaying by remember { mutableStateOf(false) }
   var showNotificationInbox by remember { mutableStateOf(false) }
+  var showRequestsSheet by remember { mutableStateOf(false) }
+  var showDataSafetySheet by remember { mutableStateOf(false) }
+  var pendingBlockTarget by remember { mutableStateOf<BlockTargetUser?>(null) }
+  var pendingReportTarget by remember { mutableStateOf<ReportTargetUser?>(null) }
   var playlistPickerTrack by remember { mutableStateOf<MusicTrack?>(null) }
   var shareDialogTrack by remember { mutableStateOf<MusicTrack?>(null) }
   var storyStudioTrackOverlay by remember { mutableStateOf<MusicTrack?>(null) }
@@ -190,14 +218,32 @@ fun VizyonMainShell(
     VizyonNotificationHelper.ensureChannel(context)
   }
 
-  LaunchedEffect(openNowPlayingNonce) {
-    if (openNowPlayingNonce > 0 && playbackState.currentTrack != null) {
+  LaunchedEffect(isVaultLocked) {
+    if (isVaultLocked) {
+      showNowPlaying = false
+      showNotificationInbox = false
+      showRequestsSheet = false
+      showDataSafetySheet = false
+      playlistPickerTrack = null
+      shareDialogTrack = null
+      storyStudioTrackOverlay = null
+      activeStoryForViewer = null
+      pendingBlockTarget = null
+      pendingReportTarget = null
+      viewModel.closeDirectChat()
+      viewModel.closeInspectFollowLists()
+      viewModel.dismissInAppBubble()
+    }
+  }
+
+  LaunchedEffect(openNowPlayingNonce, isVaultLocked) {
+    if (!isVaultLocked && openNowPlayingNonce > 0 && playbackState.currentTrack != null) {
       showNowPlaying = true
     }
   }
 
-  LaunchedEffect(pendingDeepLink) {
-    if (pendingDeepLink != null) {
+  LaunchedEffect(pendingDeepLink, isVaultLocked) {
+    if (!isVaultLocked && pendingDeepLink != null) {
       navController.navigate(SocialFeedRoute) {
         popUpTo(navController.graph.findStartDestination().id) { saveState = true }
         launchSingleTop = true
@@ -254,6 +300,7 @@ fun VizyonMainShell(
     ((followersState as? UiState.Success)?.data ?: emptyList())
       .map { sanitizeFirestoreId(it.targetUserId.ifBlank { it.id }) }
       .toSet()
+  val blockedUsers = (blockedUsersState as? UiState.Success)?.data.orEmpty()
 
   // Allocate one shared foreground WebView whenever a track is active so minimizing into the
   // compact MiniPlayer video viewport continues playback with zero interruption or overlap.
@@ -292,6 +339,7 @@ fun VizyonMainShell(
               onIFrameLoadFailure = { viewModel.onYouTubeIFrameLoadFailure(it) },
               onRetryVideo = { viewModel.retryCurrentTrackVideo() },
               onExpandClick = {
+                if (isVaultLocked) return@MiniPlayerBar
                 val track = playbackState.currentTrack
                 if (track != null) {
                   if (track.youtubeVideoId.isBlank() && playbackState.activeVideoId.isBlank()) {
@@ -300,9 +348,9 @@ fun VizyonMainShell(
                   showNowPlaying = true
                 }
               },
-              onPlayPauseClick = { viewModel.togglePlayPause() },
-              onNextClick = { viewModel.skipNext() },
-              onDismissSwipe = { viewModel.stopAndDismissPlayer() }
+              onPlayPauseClick = { if (!isVaultLocked) viewModel.togglePlayPause() },
+              onNextClick = { if (!isVaultLocked) viewModel.skipNext() },
+              onDismissSwipe = { if (!isVaultLocked) viewModel.stopAndDismissPlayer() }
             )
           }
 
@@ -328,10 +376,12 @@ fun VizyonMainShell(
               ) {
                 navItems.forEach { item ->
                   val selected = currentDest?.hasRoute(item.route::class) == true
-                  val showSocialBadge = item.route == SocialFeedRoute && unreadNotificationCount > 0
+                  val socialAlertsCount = unreadNotificationCount + pendingRequestsCount
+                  val showSocialBadge = item.route == SocialFeedRoute && socialAlertsCount > 0
                   NavigationBarItem(
                     selected = selected,
                     onClick = {
+                      if (isVaultLocked) return@NavigationBarItem
                       navController.navigate(item.route) {
                         popUpTo(navController.graph.findStartDestination().id) { saveState = true }
                         launchSingleTop = true
@@ -348,7 +398,7 @@ fun VizyonMainShell(
                     ),
                     icon = {
                       if (showSocialBadge) {
-                        BadgedBox(badge = { Badge { Text(unreadNotificationCount.coerceAtMost(9).toString()) } }) {
+                        BadgedBox(badge = { Badge { Text(socialAlertsCount.coerceAtMost(9).toString()) } }) {
                           Icon(
                             imageVector = if (selected) item.selectedIcon else item.unselectedIcon,
                             contentDescription = item.label
@@ -524,7 +574,7 @@ fun VizyonMainShell(
                 directChatsState = directChatsState,
                 likedActivityIds = likedActivityIds,
                 unreadNotificationCount = unreadNotificationCount,
-                pendingDeepLink = pendingDeepLink,
+                pendingDeepLink = if (isVaultLocked) null else pendingDeepLink,
                 onConsumeDeepLink = { viewModel.consumePendingDeepLink() },
                 onOpenNotifications = { showNotificationInbox = true },
                 onPublishQuickPost = { note, track -> viewModel.publishQuickSocialPost(note, track) },
@@ -549,7 +599,20 @@ fun VizyonMainShell(
                   navController.navigate(StudioRoute) { launchSingleTop = true }
                 },
                 onOpenStoryViewer = { activeStoryForViewer = it },
-                onNotifyMessage = { viewModel.notifyUser(it) }
+                onNotifyMessage = { viewModel.notifyUser(it) },
+                pendingRequestsCount = pendingRequestsCount,
+                outgoingRequestKeys = outgoingRequestKeys,
+                onOpenRequests = { showRequestsSheet = true },
+                onBlockUser = { uid, name, handle, avatar ->
+                  if (uid.isNotBlank()) {
+                    pendingBlockTarget = BlockTargetUser(uid, name, handle, avatar)
+                  }
+                },
+                onReportUser = { uid, type, id, name ->
+                  if (uid.isNotBlank()) {
+                    pendingReportTarget = ReportTargetUser(uid, type, id, name)
+                  }
+                }
               )
             }
             composable<LibraryRoute> {
@@ -616,6 +679,11 @@ fun VizyonMainShell(
                   viewModel.updateVaultSettings(rememberMe, lockOnLaunch)
                 },
                 onChatPrivacyChange = { viewModel.updateChatPrivacy(it) },
+                onRequireFollowApprovalToggle = { viewModel.updateRequireFollowApproval(it) },
+                onBackgroundNotifServiceToggle = { viewModel.updateBackgroundNotifServiceEnabled(it) },
+                blockedUsers = blockedUsers,
+                onUnblockUser = { viewModel.unblockUser(it) },
+                onOpenDataSafety = { showDataSafetySheet = true },
                 onDefaultStoryThemeChange = { viewModel.updateDefaultStoryTheme(it) },
                 onUpdateFavoriteGenres = { viewModel.updateFavoriteGenres(it) },
                 onOpenFollowLists = { viewModel.inspectFollowLists(currentUserId ?: "local") },
@@ -639,7 +707,7 @@ fun VizyonMainShell(
     // Artist Profile Overlay with crisp 160ms glide+fade
     val overlayEase = remember { CubicBezierEasing(0.22f, 1f, 0.36f, 1f) }
     AnimatedVisibility(
-      visible = artistDetailState != null,
+      visible = artistDetailState != null && !isVaultLocked,
       enter =
         slideInHorizontally(tween(160, easing = overlayEase)) { it / 16 } +
           fadeIn(tween(160, easing = overlayEase)),
@@ -673,7 +741,7 @@ fun VizyonMainShell(
 
     // Fullscreen Now Playing Modal sharing the active WebView cleanly with MiniPlayerBar
     AnimatedVisibility(
-      visible = showNowPlaying && sharedWebView != null && playbackState.currentTrack != null,
+      visible = showNowPlaying && !isVaultLocked && sharedWebView != null && playbackState.currentTrack != null,
       enter =
         slideInVertically(tween(170, easing = overlayEase)) { it / 18 } +
           fadeIn(tween(170, easing = overlayEase)),
@@ -711,132 +779,213 @@ fun VizyonMainShell(
       }
     }
 
-    if (showNotificationInbox) {
-      NotificationInboxSheet(
-        notificationsState = notificationsState,
-        onDismiss = { showNotificationInbox = false },
-        onNotificationClick = { notif ->
-          showNotificationInbox = false
-          viewModel.handleNotificationTap(notif)
-        },
-        onMarkAllRead = { viewModel.markAllNotificationsRead() },
-        onDeleteNotification = { notif -> viewModel.deleteNotification(notif.id) },
-        onClearAllNotifications = { viewModel.clearAllNotifications() },
-        onPermissionResultMessage = { viewModel.notifyUser(it) }
-      )
-    }
+    if (!isVaultLocked) {
+      if (showNotificationInbox) {
+        NotificationInboxSheet(
+          notificationsState = notificationsState,
+          onDismiss = { showNotificationInbox = false },
+          onNotificationClick = { notif ->
+            showNotificationInbox = false
+            viewModel.handleNotificationTap(notif)
+          },
+          onMarkAllRead = { viewModel.markAllNotificationsRead() },
+          onDeleteNotification = { notif -> viewModel.deleteNotification(notif.id) },
+          onClearAllNotifications = { viewModel.clearAllNotifications() },
+          onPermissionResultMessage = { viewModel.notifyUser(it) }
+        )
+      }
 
-    playlistPickerTrack?.let { tr ->
-      AddToPlaylistDialog(
-        track = tr,
-        playlists = playlists,
-        onDismiss = { playlistPickerTrack = null },
-        onSelectPlaylist = { plId -> viewModel.addTrackToPlaylist(plId, tr) },
-        onCreateNewQuick = { name ->
-          viewModel.createPlaylist(
-            title = name,
-            description = "",
-            accentHex = appearance.accentPalette.hexString,
-            coverStyle = PlaylistCoverStyle.CHROME,
-            sharedPublic = true
-          )
-        }
-      )
-    }
+      if (showRequestsSheet) {
+        val followReqCount = (incomingFollowRequestsState as? UiState.Success)?.data?.size ?: 0
+        val msgReqCount = (incomingMessageRequestsState as? UiState.Success)?.data?.size ?: 0
+        val defaultReqTab = if (followReqCount == 0 && msgReqCount > 0) 1 else 0
+        RequestsModalSheet(
+          followRequestsState = incomingFollowRequestsState,
+          messageRequestsState = incomingMessageRequestsState,
+          initialTab = defaultReqTab,
+          onDismiss = { showRequestsSheet = false },
+          onRespondFollowRequest = { req, accept -> viewModel.respondToFollowRequest(req, accept) },
+          onRespondMessageRequest = { req, accept ->
+            if (accept) showRequestsSheet = false
+            viewModel.respondToMessageRequest(req, accept, openChatOnAccept = accept)
+          },
+          onNotifyMessage = { viewModel.notifyUser(it) }
+        )
+      }
 
-    shareDialogTrack?.let { tr ->
-      ShareTrackDialog(
-        track = tr,
-        onDismiss = { shareDialogTrack = null },
-        onShareToFeed = { note -> viewModel.shareTrackToActivityFeed(tr, note) }
-      )
-    }
+      if (showDataSafetySheet) {
+        DataSafetyModalSheet(onDismiss = { showDataSafetySheet = false })
+      }
 
-    storyStudioTrackOverlay?.let { tr ->
-      val catalogTracks =
-        (catalogState as? UiState.Success<HomeCatalogData>)?.data?.tracks.orEmpty()
-      StoryStudioSheet(
-        userName = userName,
-        userHandle = profile?.handle ?: "@vizyon",
-        userPhotoUrl = effectiveUserPhoto,
-        initialTrack = tr,
-        candidateTracks = (listOf(tr) + catalogTracks).distinctBy { it.trackId }.take(8),
-        initialTheme = appearance.defaultStoryTheme,
-        onDismiss = { storyStudioTrackOverlay = null },
-        onPublishStory = { track, note, theme -> viewModel.publishStory(track, note, theme) },
-        onNotifyMessage = { viewModel.notifyUser(it) }
-      )
-    }
-
-    activeChatPeer?.let { peer ->
-      val peerSafeId = sanitizeFirestoreId(peer.userId.ifBlank { peer.id })
-      val favTracks =
-        ((favoritesState as? UiState.Success)?.data ?: emptyList()).map { it.toMusicTrack() }
-      val catalogTracks =
-        (catalogState as? UiState.Success<HomeCatalogData>)?.data?.tracks.orEmpty()
-      val dmCandidateTracks =
-        remember(favTracks, catalogTracks) {
-          (favTracks + catalogTracks).distinctBy { it.trackId }.take(8)
-        }
-      DirectChatThreadSheet(
-        peer = peer,
-        currentUserId = currentUserId,
-        isFollowerOrFollowing = peerSafeId in myFollowingIds || peerSafeId in myFollowerIds,
-        messagesState = activeChatMessagesState,
-        currentTrack = playbackState.currentTrack,
-        candidateTracks = dmCandidateTracks,
-        onDismiss = { viewModel.closeDirectChat() },
-        onSendMessage = { txt, tr -> viewModel.sendDirectMessage(txt, tr) },
-        onPlayTrack = { tr ->
-          viewModel.closeDirectChat()
-          viewModel.playTrack(tr)
-        },
-        onDeleteChatThread = { viewModel.deleteDirectChat(peerSafeId) },
-        onDeleteMessage = { msg -> viewModel.deleteDirectMessage(peerSafeId, msg.id) }
-      )
-    }
-
-    inspectedFollowUserId?.let { targetUid ->
-      val listeners = (publicListenersState as? UiState.Success)?.data.orEmpty()
-      val targetLabel =
-        if (targetUid == currentUserId || targetUid == "local") {
-          "$userName • Bağlantılar"
-        } else {
-          listeners.firstOrNull { sanitizeFirestoreId(it.userId.ifBlank { it.id }) == targetUid }?.displayName
-            ?.let { "$it • Bağlantılar" } ?: "Takip Bağlantıları"
-        }
-      FollowConnectionsModalSheet(
-        title = targetLabel,
-        followersState = inspectedFollowersState,
-        followingState = inspectedFollowingState,
-        currentUserId = currentUserId,
-        myFollowingIds = myFollowingIds,
-        onDismiss = { viewModel.closeInspectFollowLists() },
-        onOpenProfileById = { uidToOpen ->
-          viewModel.closeInspectFollowLists()
-          if (uidToOpen == currentUserId || uidToOpen == "local") {
-            navController.navigate(StudioRoute) { launchSingleTop = true }
-          } else {
-            viewModel.openListenerProfileById(uidToOpen)
+      playlistPickerTrack?.let { tr ->
+        AddToPlaylistDialog(
+          track = tr,
+          playlists = playlists,
+          onDismiss = { playlistPickerTrack = null },
+          onSelectPlaylist = { plId -> viewModel.addTrackToPlaylist(plId, tr) },
+          onCreateNewQuick = { name ->
+            viewModel.createPlaylist(
+              title = name,
+              description = "",
+              accentHex = appearance.accentPalette.hexString,
+              coverStyle = PlaylistCoverStyle.CHROME,
+              sharedPublic = true
+            )
           }
-        },
-        onOpenChatById = { uidToChat ->
-          viewModel.closeInspectFollowLists()
-          viewModel.openDirectChatById(uidToChat)
-        }
-      )
-    }
+        )
+      }
 
-    if (isVaultLocked) {
-      VaultUnlockDialog(
-        userName = userName,
-        errorMessage = vaultUnlockError,
-        onUnlockSubmit = { viewModel.unlockVault(it) }
-      )
+      shareDialogTrack?.let { tr ->
+        ShareTrackDialog(
+          track = tr,
+          onDismiss = { shareDialogTrack = null },
+          onShareToFeed = { note -> viewModel.shareTrackToActivityFeed(tr, note) }
+        )
+      }
+
+      storyStudioTrackOverlay?.let { tr ->
+        val catalogTracks =
+          (catalogState as? UiState.Success<HomeCatalogData>)?.data?.tracks.orEmpty()
+        StoryStudioSheet(
+          userName = userName,
+          userHandle = profile?.handle ?: "@vizyon",
+          userPhotoUrl = effectiveUserPhoto,
+          initialTrack = tr,
+          candidateTracks = (listOf(tr) + catalogTracks).distinctBy { it.trackId }.take(8),
+          initialTheme = appearance.defaultStoryTheme,
+          onDismiss = { storyStudioTrackOverlay = null },
+          onPublishStory = { track, note, theme -> viewModel.publishStory(track, note, theme) },
+          onNotifyMessage = { viewModel.notifyUser(it) }
+        )
+      }
+
+      activeChatPeer?.let { peer ->
+        val rawPeerId = peer.userId.ifBlank { peer.id }
+        val peerSafeId = if (rawPeerId.isNotBlank()) sanitizeFirestoreId(rawPeerId) else ""
+        val favTracks =
+          ((favoritesState as? UiState.Success)?.data ?: emptyList()).map { it.toMusicTrack() }
+        val catalogTracks =
+          (catalogState as? UiState.Success<HomeCatalogData>)?.data?.tracks.orEmpty()
+        val dmCandidateTracks =
+          remember(favTracks, catalogTracks) {
+            (favTracks + catalogTracks).distinctBy { it.trackId }.take(8)
+          }
+        val hasPendingMsgReq =
+          peerSafeId.isNotBlank() && "msg_${peerSafeId}::PENDING" in outgoingRequestKeys
+        DirectChatThreadSheet(
+          peer = peer,
+          currentUserId = currentUserId,
+          isFollowerOrFollowing = peerSafeId.isNotBlank() && (peerSafeId in myFollowingIds || peerSafeId in myFollowerIds),
+          messagesState = activeChatMessagesState,
+          currentTrack = playbackState.currentTrack,
+          candidateTracks = dmCandidateTracks,
+          onDismiss = { viewModel.closeDirectChat() },
+          onSendMessage = { txt, tr -> viewModel.sendDirectMessage(txt, tr) },
+          onPlayTrack = { tr ->
+            viewModel.closeDirectChat()
+            viewModel.playTrack(tr)
+          },
+          onDeleteChatThread = {
+            if (peerSafeId.isNotBlank()) viewModel.deleteDirectChat(peerSafeId)
+          },
+          onDeleteMessage = { msg ->
+            if (peerSafeId.isNotBlank()) viewModel.deleteDirectMessage(peerSafeId, msg.id)
+          },
+          hasPendingMessageRequest = hasPendingMsgReq,
+          onSendVoiceMessage = { b64, dur -> viewModel.sendVoiceDirectMessage(b64, dur) },
+          onSendMessageRequest = { txt ->
+            viewModel.sendMessageRequest(peer = peer, previewText = txt, messageType = DirectMessageType.TEXT)
+          },
+          onSendVoiceMessageRequest = { b64, dur ->
+            viewModel.sendMessageRequest(
+              peer = peer,
+              previewText = "",
+              messageType = DirectMessageType.VOICE,
+              audioBase64 = b64,
+              audioDurationMs = dur
+            )
+          },
+          onBlockUser = {
+            if (peerSafeId.isNotBlank()) {
+              pendingBlockTarget = BlockTargetUser(peerSafeId, peer.displayName, peer.handle, peer.photoUrl)
+            }
+          },
+          onReportUser = {
+            if (peerSafeId.isNotBlank()) {
+              pendingReportTarget = ReportTargetUser(peerSafeId, "USER", peerSafeId, peer.displayName)
+            }
+          },
+          onNotifyMessage = { viewModel.notifyUser(it) }
+        )
+      }
+
+      inspectedFollowUserId?.let { targetUid ->
+        val listeners = (publicListenersState as? UiState.Success)?.data.orEmpty()
+        val targetLabel =
+          if (targetUid == currentUserId || targetUid == "local") {
+            "$userName • Bağlantılar"
+          } else {
+            listeners.firstOrNull { sanitizeFirestoreId(it.userId.ifBlank { it.id }) == targetUid }?.displayName
+              ?.let { "$it • Bağlantılar" } ?: "Takip Bağlantıları"
+          }
+        FollowConnectionsModalSheet(
+          title = targetLabel,
+          followersState = inspectedFollowersState,
+          followingState = inspectedFollowingState,
+          currentUserId = currentUserId,
+          myFollowingIds = myFollowingIds,
+          onDismiss = { viewModel.closeInspectFollowLists() },
+          onOpenProfileById = { uidToOpen ->
+            viewModel.closeInspectFollowLists()
+            if (uidToOpen == currentUserId || uidToOpen == "local") {
+              navController.navigate(StudioRoute) { launchSingleTop = true }
+            } else {
+              viewModel.openListenerProfileById(uidToOpen)
+            }
+          },
+          onOpenChatById = { uidToChat ->
+            viewModel.closeInspectFollowLists()
+            viewModel.openDirectChatById(uidToChat)
+          }
+        )
+      }
+
+      pendingReportTarget?.let { target ->
+        ReportUserDialog(
+          targetDisplayName = target.displayName,
+          onDismiss = { pendingReportTarget = null },
+          onSubmitReport = { reason, details ->
+            pendingReportTarget = null
+            viewModel.reportUser(
+              targetUserId = target.targetUserId,
+              targetType = target.targetType,
+              targetId = target.targetId,
+              reason = reason,
+              details = details
+            )
+          }
+        )
+      }
+
+      pendingBlockTarget?.let { target ->
+        BlockUserConfirmDialog(
+          targetDisplayName = target.displayName,
+          onDismiss = { pendingBlockTarget = null },
+          onConfirmBlock = {
+            pendingBlockTarget = null
+            viewModel.blockUser(
+              targetUserId = target.userId,
+              targetName = target.displayName,
+              targetHandle = target.handle,
+              targetAvatarUrl = target.avatarUrl
+            )
+          }
+        )
+      }
     }
 
     AnimatedVisibility(
-      visible = activeStoryForViewer != null,
+      visible = activeStoryForViewer != null && !isVaultLocked,
       enter = fadeIn(animationSpec = tween(180)),
       exit = fadeOut(animationSpec = tween(160))
     ) {
@@ -875,13 +1024,29 @@ fun VizyonMainShell(
           onMessageAuthor = {
             activeStoryForViewer = null
             viewModel.openDirectChat(authorProfile)
-          }
+          },
+          onBlockAuthor =
+            if (!isAuthor) {
+              { pendingBlockTarget = BlockTargetUser(story.userId, story.userName, story.userHandle, story.userAvatarUrl) }
+            } else null,
+          onReportAuthor =
+            if (!isAuthor) {
+              { pendingReportTarget = ReportTargetUser(story.userId, "STORY", story.id, story.userName) }
+            } else null
         )
       }
     }
 
+    if (isVaultLocked) {
+      VaultUnlockDialog(
+        userName = userName,
+        errorMessage = vaultUnlockError,
+        onUnlockSubmit = { viewModel.unlockVault(it) }
+      )
+    }
+
     InAppNotificationBubble(
-      notification = activeInAppBubble,
+      notification = if (isVaultLocked) null else activeInAppBubble,
       onOpen = { notif ->
         viewModel.dismissInAppBubble()
         viewModel.handleNotificationTap(notif)

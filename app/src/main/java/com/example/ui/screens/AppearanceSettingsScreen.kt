@@ -62,6 +62,7 @@ import com.example.model.ApiBridgeStatus
 import com.example.model.AppAppearanceConfig
 import com.example.model.AppLanguage
 import com.example.model.AppThemeMode
+import com.example.model.BlockedUser
 import com.example.model.ChatPrivacy
 import com.example.model.CornerDensity
 import com.example.model.MusicTrack
@@ -118,6 +119,11 @@ fun AppearanceSettingsScreen(
   onSaveVaultPasscode: (String, Boolean, Boolean) -> Unit = { _, _, _ -> },
   onUpdateVaultSettings: (Boolean, Boolean) -> Unit = { _, _ -> },
   onChatPrivacyChange: (ChatPrivacy) -> Unit = {},
+  onRequireFollowApprovalToggle: (Boolean) -> Unit = {},
+  onBackgroundNotifServiceToggle: (Boolean) -> Unit = {},
+  blockedUsers: List<BlockedUser> = emptyList(),
+  onUnblockUser: (String) -> Unit = {},
+  onOpenDataSafety: () -> Unit = {},
   onDefaultStoryThemeChange: (StoryCardTheme) -> Unit = {},
   onUpdateFavoriteGenres: (List<String>) -> Unit = {},
   onOpenFollowLists: () -> Unit = {},
@@ -204,10 +210,15 @@ fun AppearanceSettingsScreen(
             appearance = appearance,
             unreadNotificationCount = unreadNotificationCount,
             bridgeStatus = bridgeStatus,
+            blockedUsers = blockedUsers,
             onBack = { activeSubPage = ProfileSubPage.OVERVIEW },
             onChatPrivacyChange = onChatPrivacyChange,
+            onRequireFollowApprovalToggle = onRequireFollowApprovalToggle,
             onNotificationsToggle = onNotificationsToggle,
+            onBackgroundNotifServiceToggle = onBackgroundNotifServiceToggle,
             onOpenNotifications = onOpenNotifications,
+            onUnblockUser = onUnblockUser,
+            onOpenDataSafety = onOpenDataSafety,
             onNotifyMessage = onNotifyMessage
           )
         }

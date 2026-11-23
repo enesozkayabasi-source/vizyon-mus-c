@@ -78,7 +78,7 @@ object PasscodeSecurityHelper {
 
   suspend fun compressAvatarToDataUrl(context: Context, uri: Uri): String? =
     withContext(Dispatchers.IO) {
-      runCatching {
+      try {
         val resolver = context.applicationContext.contentResolver
         val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, boundsOpts) }
@@ -122,11 +122,13 @@ object PasscodeSecurityHelper {
           }
           quality -= 10
         }
-        if (scaled !== square) scaled.recycle()
-        if (square !== decoded) square.recycle()
-        decoded.recycle()
+        if (scaled !== square && !scaled.isRecycled) scaled.recycle()
+        if (square !== decoded && !square.isRecycled) square.recycle()
+        if (!decoded.isRecycled) decoded.recycle()
         dataUrl.ifBlank { null }
-      }.getOrNull()
+      } catch (_: Throwable) {
+        null
+      }
     }
 
   fun decodeDataUrlBitmap(dataUrl: String): ImageBitmap? {
@@ -135,11 +137,12 @@ object PasscodeSecurityHelper {
     bitmapCache.get(key)?.let { return it }
     val commaIdx = dataUrl.indexOf(',')
     if (commaIdx <= 0 || commaIdx >= dataUrl.lastIndex) return null
-    return runCatching {
+    return try {
       val b64 = dataUrl.substring(commaIdx + 1)
       val bytes = Base64.decode(b64, Base64.DEFAULT)
       val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
       BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+      if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
       var sample = 1
       while (bounds.outWidth / (sample * 2) >= 160 && bounds.outHeight / (sample * 2) >= 160) {
         sample *= 2
@@ -150,6 +153,8 @@ object PasscodeSecurityHelper {
       }
       val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return null
       bmp.asImageBitmap().also { bitmapCache.put(key, it) }
-    }.getOrNull()
+    } catch (_: Throwable) {
+      null
+    }
   }
 }

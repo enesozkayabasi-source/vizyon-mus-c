@@ -12,6 +12,7 @@ import com.example.data.firebase.VizyonFirestoreRepository
 import com.example.data.local.AppearancePreferences
 import com.example.data.local.LocalActivityCommentEntity
 import com.example.data.local.LocalActivityEntity
+import com.example.data.local.LocalBlockedUserEntity
 import com.example.data.local.LocalDirectMessageEntity
 import com.example.data.local.LocalFanPostEntity
 import com.example.data.local.LocalFavoriteEntity
@@ -33,14 +34,18 @@ import com.example.model.AppLanguage
 import com.example.model.AppThemeMode
 import com.example.model.ArtistFanPost
 import com.example.model.ArtistSummary
+import com.example.model.BlockedUser
 import com.example.model.ChatPrivacy
 import com.example.model.CornerDensity
 import com.example.model.DISCOVER_AUTO_REFRESH_INTERVAL_MS
 import com.example.model.DirectChatMessage
 import com.example.model.DirectChatThread
+import com.example.model.DirectMessageType
 import com.example.model.FanPostTag
 import com.example.model.FollowConnection
+import com.example.model.FollowRequest
 import com.example.model.FollowedArtist
+import com.example.model.MessageRequest
 import com.example.model.MusicStoryItem
 import com.example.model.MusicTrack
 import com.example.model.NotificationType
@@ -48,6 +53,7 @@ import com.example.model.Playlist
 import com.example.model.PlaylistCoverStyle
 import com.example.model.PublicProfile
 import com.example.model.RecentTrackSummary
+import com.example.model.ReportReason
 import com.example.model.SavedTrack
 import com.example.model.SearchAutocompleteSuggestion
 import com.example.model.StoryCardTheme
@@ -61,6 +67,7 @@ import com.example.model.sanitizeFirestoreId
 import com.example.notifications.BackgroundNotificationJobService
 import com.example.notifications.NotificationDispatchGuard
 import com.example.notifications.VizyonNotificationHelper
+import com.example.notifications.VizyonRealtimeNotificationService
 import com.example.player.PlaybackUiState
 import com.example.player.YouTubeForegroundPlayerManager
 import com.example.ui.auth.isRecentLoginFresh
@@ -92,6 +99,7 @@ import java.util.UUID
 
 sealed interface NotificationDeepLinkTarget {
   data object OpenFeed : NotificationDeepLinkTarget
+  data object OpenRequests : NotificationDeepLinkTarget
   data class OpenPostComments(val activityId: String) : NotificationDeepLinkTarget
   data class OpenListenerProfile(val userId: String) : NotificationDeepLinkTarget
   data class OpenStory(val storyId: String, val trackId: String = "") : NotificationDeepLinkTarget
@@ -267,9 +275,37 @@ class VizyonMainViewModel(
       }
       .asSafeUiState("playlistTracks")
 
+  val blockedUsersState: StateFlow<UiState<List<BlockedUser>>> =
+    if (!currentUserId.isNullOrBlank()) {
+      firestoreRepo.observeBlockedUsers(currentUserId).asSafeUiState("blockedUsers")
+    } else {
+      localLibraryDao.observeBlockedUsers()
+        .map { list -> list.map { it.toBlockedUser() } }
+        .asSafeUiState("localBlockedUsers")
+    }
+
+  private val blockedIdSetFlow: Flow<Set<String>> =
+    blockedUsersState.map { st ->
+      (st as? UiState.Success)?.data
+        ?.mapNotNull { blocked ->
+          val raw = blocked.blockedUserId.ifBlank { blocked.id }
+          raw.takeIf { it.isNotBlank() }?.let(::sanitizeFirestoreId)
+        }
+        ?.toSet()
+        .orEmpty()
+    }
+
   val publicListenersState: StateFlow<UiState<List<PublicProfile>>> =
     if (!currentUserId.isNullOrBlank()) {
-      firestoreRepo.observePublicListeners(currentUserId).asSafeUiState("publicListeners")
+      combine(
+        firestoreRepo.observePublicListeners(currentUserId),
+        blockedIdSetFlow
+      ) { list, blockedIds ->
+        list.filterNot { profile ->
+          val raw = profile.userId.ifBlank { profile.id }
+          raw.isNotBlank() && sanitizeFirestoreId(raw) in blockedIds
+        }
+      }.asSafeUiState("publicListeners")
     } else {
       flowOf(emptyList<PublicProfile>()).asSafeUiState("localPublicListeners")
     }
@@ -289,6 +325,60 @@ class VizyonMainViewModel(
     } else {
       flowOf(emptyList<FollowConnection>()).asSafeUiState("localFollowers")
     }
+
+  val incomingFollowRequestsState: StateFlow<UiState<List<FollowRequest>>> =
+    if (!currentUserId.isNullOrBlank()) {
+      combine(
+        firestoreRepo.observeIncomingFollowRequests(currentUserId),
+        blockedIdSetFlow
+      ) { list, blockedIds ->
+        list.filter { req ->
+          val rid = req.requesterId.ifBlank { req.id }
+          rid.isNotBlank() && sanitizeFirestoreId(rid) !in blockedIds
+        }
+      }.asSafeUiState("incomingFollowRequests")
+    } else {
+      flowOf(emptyList<FollowRequest>()).asSafeUiState("localFollowRequests")
+    }
+
+  val incomingMessageRequestsState: StateFlow<UiState<List<MessageRequest>>> =
+    if (!currentUserId.isNullOrBlank()) {
+      combine(
+        firestoreRepo.observeIncomingMessageRequests(currentUserId),
+        blockedIdSetFlow
+      ) { list, blockedIds ->
+        list.filter { req ->
+          val rid = req.requesterId.ifBlank { req.id }
+          rid.isNotBlank() && sanitizeFirestoreId(rid) !in blockedIds
+        }
+      }.asSafeUiState("incomingMessageRequests")
+    } else {
+      flowOf(emptyList<MessageRequest>()).asSafeUiState("localMessageRequests")
+    }
+
+  val outgoingRequestKeysState: StateFlow<Set<String>> =
+    if (!currentUserId.isNullOrBlank()) {
+      firestoreRepo.observeOutgoingRequestKeys(currentUserId)
+        .catch { emit(emptySet()) }
+        .stateIn(
+          scope = viewModelScope,
+          started = SharingStarted.WhileSubscribed(5000L),
+          initialValue = emptySet()
+        )
+    } else {
+      MutableStateFlow(emptySet())
+    }
+
+  val pendingRequestsCount: StateFlow<Int> =
+    combine(incomingFollowRequestsState, incomingMessageRequestsState) { followSt, msgSt ->
+      val fCount = (followSt as? UiState.Success)?.data?.size ?: 0
+      val mCount = (msgSt as? UiState.Success)?.data?.size ?: 0
+      fCount + mCount
+    }.stateIn(
+      scope = viewModelScope,
+      started = SharingStarted.WhileSubscribed(5000L),
+      initialValue = 0
+    )
 
   val inspectedFollowingState: StateFlow<UiState<List<FollowConnection>>> =
     _inspectedFollowUserId
@@ -318,11 +408,22 @@ class VizyonMainViewModel(
 
   val directChatsState: StateFlow<UiState<List<DirectChatThread>>> =
     if (!currentUserId.isNullOrBlank()) {
-      firestoreRepo.observeDirectChats(currentUserId).asSafeUiState("directChats")
+      combine(
+        firestoreRepo.observeDirectChats(currentUserId),
+        blockedIdSetFlow
+      ) { threads, blockedIds ->
+        threads.filterNot { thread ->
+          val peer = thread.peerIdFor(currentUserId)
+          peer.isNotBlank() && sanitizeFirestoreId(peer) in blockedIds
+        }
+      }.asSafeUiState("directChats")
     } else {
-      localLibraryDao.observeAllDirectMessages()
-        .map { msgs ->
-          msgs.groupBy { it.chatId }.mapNotNull { (chatId, list) ->
+      combine(
+        localLibraryDao.observeAllDirectMessages(),
+        blockedIdSetFlow
+      ) { msgs, blockedIds ->
+        msgs.filterNot { it.peerId.isNotBlank() && sanitizeFirestoreId(it.peerId) in blockedIds }
+          .groupBy { it.chatId }.mapNotNull { (chatId, list) ->
             val latest = list.maxByOrNull { it.createdAtMs } ?: return@mapNotNull null
             DirectChatThread(
               id = chatId,
@@ -337,17 +438,17 @@ class VizyonMainViewModel(
               lastMessageAtMillis = latest.createdAtMs
             )
           }.sortedByDescending { it.lastMessageAtMillis }
-        }
-        .asSafeUiState("localDirectChats")
+      }.asSafeUiState("localDirectChats")
     }
 
   val activeChatMessagesState: StateFlow<UiState<List<DirectChatMessage>>> =
     _activeChatPeer
       .flatMapLatest { peer ->
-        if (peer == null) {
+        val rawPeerId = peer?.userId?.ifBlank { peer.id }.orEmpty()
+        if (peer == null || rawPeerId.isBlank()) {
           flowOf(emptyList())
         } else {
-          val peerId = sanitizeFirestoreId(peer.userId.ifBlank { peer.id })
+          val peerId = sanitizeFirestoreId(rawPeerId)
           if (!currentUserId.isNullOrBlank()) {
             val chatId = buildDirectChatId(currentUserId, peerId)
             firestoreRepo.observeChatMessages(chatId, currentUserId)
@@ -372,9 +473,15 @@ class VizyonMainViewModel(
   // Strictly user-published shares & reposts; automatic LISTENING pings are NEVER shown in Akış.
   val activityFeedState: StateFlow<UiState<List<ActivityFeedItem>>> =
     if (!currentUserId.isNullOrBlank()) {
-      firestoreRepo.observePublicActivityFeed(currentUserId)
-        .map { list -> list.filterNot { it.actionType == ActivityActionType.LISTENING.name } }
-        .asSafeUiState("activityFeed")
+      combine(
+        firestoreRepo.observePublicActivityFeed(currentUserId),
+        blockedIdSetFlow
+      ) { list, blockedIds ->
+        list.filterNot { item ->
+          item.actionType == ActivityActionType.LISTENING.name ||
+            (item.userId.isNotBlank() && sanitizeFirestoreId(item.userId) in blockedIds)
+        }
+      }.asSafeUiState("activityFeed")
     } else {
       localLibraryDao.observeActivityFeed()
         .map { list ->
@@ -386,12 +493,16 @@ class VizyonMainViewModel(
 
   val storiesState: StateFlow<UiState<List<MusicStoryItem>>> =
     if (!currentUserId.isNullOrBlank()) {
-      firestoreRepo.observePublicStories(currentUserId)
-        .map { list ->
-          val now = System.currentTimeMillis()
-          list.filter { it.expiresAtMillis == 0L || it.expiresAtMillis > now }
+      combine(
+        firestoreRepo.observePublicStories(currentUserId),
+        blockedIdSetFlow
+      ) { list, blockedIds ->
+        val now = System.currentTimeMillis()
+        list.filter { story ->
+          (story.expiresAtMillis == 0L || story.expiresAtMillis > now) &&
+            (story.userId.isBlank() || sanitizeFirestoreId(story.userId) !in blockedIds)
         }
-        .asSafeUiState("stories")
+      }.asSafeUiState("stories")
     } else {
       localLibraryDao.observeStories()
         .map { list ->
@@ -429,7 +540,14 @@ class VizyonMainViewModel(
 
   val notificationsState: StateFlow<UiState<List<UserNotification>>> =
     if (!currentUserId.isNullOrBlank()) {
-      firestoreRepo.observeNotifications(currentUserId).asSafeUiState("notifications")
+      combine(
+        firestoreRepo.observeNotifications(currentUserId),
+        blockedIdSetFlow
+      ) { list, blockedIds ->
+        list.filterNot { notif ->
+          notif.senderId.isNotBlank() && sanitizeFirestoreId(notif.senderId) in blockedIds
+        }
+      }.asSafeUiState("notifications")
     } else {
       localLibraryDao.observeNotifications()
         .map { list -> list.map { it.toUserNotification() } }
@@ -453,6 +571,7 @@ class VizyonMainViewModel(
       if (cfg != null && cfg.onboardingCompleted && cfg.lockOnLaunch && cfg.hasVaultPasscode) {
         _isVaultLocked.value = true
       }
+      syncBackgroundNotifService(cfg)
     }
     if (!currentUserId.isNullOrBlank()) {
       bootstrapCloudProfile(currentUserId)
@@ -548,15 +667,35 @@ class VizyonMainViewModel(
     }
   }
 
+  private fun syncBackgroundNotifService(cfgOverride: AppAppearanceConfig? = null) {
+    val ctx = appContext ?: return
+    val cfg = cfgOverride ?: appearanceState.value
+    VizyonRealtimeNotificationService.syncServiceState(
+      context = ctx,
+      uid = currentUserId,
+      notificationsEnabled = cfg.notificationsEnabled,
+      backgroundNotifServiceEnabled = cfg.backgroundNotifServiceEnabled
+    )
+  }
+
   internal fun processIncomingNotifications(list: List<UserNotification>) {
     val ctx = appContext
     val uidKey = currentUserId ?: "guest"
+    val blockedIds =
+      (blockedUsersState.value as? UiState.Success)?.data
+        ?.mapNotNull { b -> b.blockedUserId.ifBlank { b.id }.takeIf { it.isNotBlank() }?.let(::sanitizeFirestoreId) }
+        ?.toSet()
+        .orEmpty()
+    val filteredList =
+      list.filterNot { notif ->
+        notif.senderId.isNotBlank() && sanitizeFirestoreId(notif.senderId) in blockedIds
+      }
     if (ctx != null) {
       if (!NotificationDispatchGuard.isBaselineInitialized(ctx, uidKey)) {
-        NotificationDispatchGuard.markBaselineSeen(ctx, uidKey, list.map { it.id })
+        NotificationDispatchGuard.markBaselineSeen(ctx, uidKey, filteredList.map { it.id })
         return
       }
-      val unread = list.filter { !it.read }
+      val unread = filteredList.filter { !it.read }
       val unseenIds =
         NotificationDispatchGuard.filterAndMarkUnseen(ctx, uidKey, unread.map { it.id }).toSet()
       if (!appearanceState.value.notificationsEnabled) return
@@ -571,12 +710,12 @@ class VizyonMainViewModel(
         }
     } else {
       if (!inMemoryBaselineReady) {
-        inMemorySeenNotificationIds.addAll(list.map { it.id })
+        inMemorySeenNotificationIds.addAll(filteredList.map { it.id })
         inMemoryBaselineReady = true
         return
       }
-      val newlyArrived = list.filter { !it.read && it.id !in inMemorySeenNotificationIds }
-      inMemorySeenNotificationIds.addAll(list.map { it.id })
+      val newlyArrived = filteredList.filter { !it.read && it.id !in inMemorySeenNotificationIds }
+      inMemorySeenNotificationIds.addAll(filteredList.map { it.id })
       if (!appearanceState.value.notificationsEnabled) return
       newlyArrived.forEach { newNotif ->
         if (_isAppInForeground.value) {
@@ -682,7 +821,9 @@ class VizyonMainViewModel(
     chatPrivacy: ChatPrivacy = ChatPrivacy.PUBLIC,
     passcode: String = "",
     rememberMe: Boolean = true,
-    lockOnLaunch: Boolean = false
+    lockOnLaunch: Boolean = false,
+    requireFollowApproval: Boolean = false,
+    backgroundNotifServiceEnabled: Boolean = true
   ) {
     viewModelScope.launch {
       appearancePrefs.completeOnboarding(
@@ -700,7 +841,9 @@ class VizyonMainViewModel(
         chatPrivacy = chatPrivacy,
         passcode = passcode,
         rememberMe = rememberMe,
-        lockOnLaunch = lockOnLaunch
+        lockOnLaunch = lockOnLaunch,
+        requireFollowApproval = requireFollowApproval,
+        backgroundNotifServiceEnabled = backgroundNotifServiceEnabled
       )
       if (!currentUserId.isNullOrBlank()) {
         val fbUser = Firebase.auth.currentUser
@@ -717,6 +860,7 @@ class VizyonMainViewModel(
           bio = bio,
           favoriteGenres = favoriteGenres,
           shareActivity = shareActivity,
+          requireFollowApproval = requireFollowApproval,
           chatPrivacy = chatPrivacy,
           defaultStoryTheme = defaultStoryTheme,
           securityPasscodeHash = passHash,
@@ -736,6 +880,7 @@ class VizyonMainViewModel(
           handle = handle,
           bio = bio,
           shareActivity = shareActivity,
+          requireFollowApproval = requireFollowApproval,
           favoriteGenres = favoriteGenres,
           photoUrl = avatarUrl.takeIf { it.isNotBlank() },
           chatPrivacy = chatPrivacy,
@@ -752,6 +897,8 @@ class VizyonMainViewModel(
           recentTracks = recents
         )
       }
+      val latestCfg = runCatching { appearancePrefs.configFlow.first() }.getOrNull()
+      syncBackgroundNotifService(latestCfg)
       refreshCatalog(favoriteGenres, preferredLanguage)
       notifyUser("Stüdyo kurulumu tamamlandı, hoş geldin!")
     }
@@ -784,6 +931,10 @@ class VizyonMainViewModel(
     rememberMe: Boolean,
     lockOnLaunch: Boolean
   ) {
+    if (_isVaultLocked.value) {
+      notifyUser("Kasa kilitliyken güvenlik şifresi değiştirilemez.")
+      return
+    }
     viewModelScope.launch {
       val ok = appearancePrefs.updateVaultPasscode(newPasscode, rememberMe, lockOnLaunch)
       if (!ok) {
@@ -807,6 +958,10 @@ class VizyonMainViewModel(
   }
 
   fun updateVaultSettings(rememberMe: Boolean, lockOnLaunch: Boolean) {
+    if (_isVaultLocked.value) {
+      notifyUser("Önce güvenlik kilidini açmalısın.")
+      return
+    }
     viewModelScope.launch {
       appearancePrefs.updateVaultSettings(rememberMe, lockOnLaunch)
       if (!currentUserId.isNullOrBlank()) {
@@ -837,6 +992,7 @@ class VizyonMainViewModel(
         handle = profile.handle,
         bio = profile.bio,
         shareActivity = cfg.shareListeningActivity,
+        requireFollowApproval = cfg.requireFollowApproval,
         favoriteGenres = cfg.favoriteGenres,
         photoUrl = avatar.takeIf { it.isNotBlank() },
         chatPrivacy = cfg.chatPrivacy,
@@ -864,6 +1020,10 @@ class VizyonMainViewModel(
     onReauthRequired: () -> Unit = {},
     onCompleted: () -> Unit = {}
   ) {
+    if (_isVaultLocked.value) {
+      notifyUser("Önce güvenlik kilidini doğrulamalısın.")
+      return
+    }
     if (_isDeletingAccount.value) return
     viewModelScope.launch {
       if (!currentUserId.isNullOrBlank() && !bypassFreshnessPreCheck) {
@@ -876,6 +1036,7 @@ class VizyonMainViewModel(
       }
       _isDeletingAccount.value = true
       try {
+        appContext?.let { VizyonRealtimeNotificationService.stop(it) }
         playerManager.resetAllForAccountDeletion()
         if (!currentUserId.isNullOrBlank()) {
           val res = firestoreRepo.deleteAllUserDataAndAccount(currentUserId)
@@ -1063,6 +1224,7 @@ class VizyonMainViewModel(
     appContext?.let { ctx ->
       StudioSoundEngine.warmup(ctx)
       BackgroundNotificationJobService.schedule(ctx)
+      syncBackgroundNotifService()
     }
     if (!currentUserId.isNullOrBlank()) {
       viewModelScope.launch {
@@ -1075,12 +1237,18 @@ class VizyonMainViewModel(
   }
 
   fun presentInAppBubbleIfAllowed(notification: UserNotification) {
-    if (!_isAppInForeground.value) return
+    if (!_isAppInForeground.value || _isVaultLocked.value) return
     val type = NotificationType.fromRaw(notification.type)
     val openPeerId =
-      _activeChatPeer.value?.let { sanitizeFirestoreId(it.userId.ifBlank { it.id }) }
-    val senderSafeId = sanitizeFirestoreId(notification.senderId)
-    if (type == NotificationType.MESSAGE && openPeerId != null && openPeerId == senderSafeId) {
+      _activeChatPeer.value?.let {
+        val raw = it.userId.ifBlank { it.id }
+        if (raw.isBlank()) null else sanitizeFirestoreId(raw)
+      }
+    val senderSafeId = if (notification.senderId.isNotBlank()) sanitizeFirestoreId(notification.senderId) else ""
+    if ((type == NotificationType.MESSAGE || type == NotificationType.VOICE_MESSAGE) &&
+      openPeerId != null &&
+      openPeerId == senderSafeId
+    ) {
       // User is already inside the direct chat sheet with this sender; skip top pill bubble
       return
     }
@@ -1357,8 +1525,44 @@ class VizyonMainViewModel(
     }
   }
 
+  private fun currentBlockedIdSet(): Set<String> =
+    (blockedUsersState.value as? UiState.Success)?.data
+      ?.mapNotNull { b -> b.blockedUserId.ifBlank { b.id }.takeIf { it.isNotBlank() }?.let(::sanitizeFirestoreId) }
+      ?.toSet()
+      .orEmpty()
+
+  fun isUserBlocked(userId: String): Boolean {
+    if (userId.isBlank()) return false
+    return sanitizeFirestoreId(userId) in currentBlockedIdSet()
+  }
+
+  fun hasPendingFollowRequestTo(targetUserId: String): Boolean {
+    if (targetUserId.isBlank()) return false
+    val key = "follow_${sanitizeFirestoreId(targetUserId)}::PENDING"
+    return key in outgoingRequestKeysState.value
+  }
+
+  fun hasPendingMessageRequestTo(targetUserId: String): Boolean {
+    if (targetUserId.isBlank()) return false
+    val key = "message_${sanitizeFirestoreId(targetUserId)}::PENDING"
+    return key in outgoingRequestKeysState.value
+  }
+
   fun toggleFollowListener(target: PublicProfile) {
-    val targetId = sanitizeFirestoreId(target.userId.ifBlank { target.id })
+    val rawTargetId = target.userId.ifBlank { target.id }
+    if (rawTargetId.isBlank()) {
+      notifyUser("Geçersiz kullanıcı profili.")
+      return
+    }
+    val targetId = sanitizeFirestoreId(rawTargetId)
+    if (targetId == currentUserId || targetId == "local") {
+      notifyUser("Kendini takip edemezsin.")
+      return
+    }
+    if (targetId in currentBlockedIdSet()) {
+      notifyUser("Engellediğin bir kullanıcıyı takip edemezsin.")
+      return
+    }
     val following = (followingState.value as? UiState.Success)?.data.orEmpty()
     val isFollowing = following.any { it.targetUserId == targetId || it.id == targetId }
     val me = (userProfileState.value as? UiState.Success)?.data
@@ -1381,6 +1585,38 @@ class VizyonMainViewModel(
             )
           )
           notifyUser("${target.displayName} takip edildi")
+        }
+      }
+      return
+    }
+
+    if (!isFollowing && target.requireFollowApproval) {
+      if (hasPendingFollowRequestTo(targetId)) {
+        notifyUser("Bu kullanıcıya zaten takip isteği gönderdin.")
+        return
+      }
+      viewModelScope.launch {
+        firestoreRepo.sendFollowRequest(
+          requesterId = currentUserId,
+          requesterName = myName,
+          requesterHandle = myHandle,
+          requesterAvatarUrl = myAvatar,
+          recipientId = targetId
+        ).onSuccess {
+          notifyUser("${target.displayName} kullanıcısına takip isteği gönderildi.")
+          firestoreRepo.sendNotification(
+            recipientUserId = targetId,
+            senderId = currentUserId,
+            senderName = myName,
+            senderHandle = myHandle,
+            senderAvatarUrl = myAvatar,
+            type = NotificationType.FOLLOW_REQUEST,
+            message = "Sana takip isteği gönderdi.",
+            targetType = "REQUESTS",
+            targetId = currentUserId
+          )
+        }.onFailure {
+          notifyUser(it.localizedMessage ?: "Takip isteği gönderilemedi.")
         }
       }
       return
@@ -1416,7 +1652,241 @@ class VizyonMainViewModel(
     }
   }
 
+  fun blockUser(
+    targetUserId: String,
+    targetName: String,
+    targetHandle: String,
+    targetAvatarUrl: String = ""
+  ) {
+    if (targetUserId.isBlank()) return
+    val safeTarget = sanitizeFirestoreId(targetUserId)
+    if (safeTarget == currentUserId || safeTarget == "local") {
+      notifyUser("Kendini engelleyemezsin.")
+      return
+    }
+    val openPeerId = _activeChatPeer.value?.let {
+      val raw = it.userId.ifBlank { it.id }
+      if (raw.isBlank()) null else sanitizeFirestoreId(raw)
+    }
+    if (openPeerId == safeTarget) {
+      _activeChatPeer.value = null
+    }
+    viewModelScope.launch {
+      if (!currentUserId.isNullOrBlank()) {
+        firestoreRepo.blockUser(
+          userId = currentUserId,
+          targetUserId = safeTarget,
+          targetName = targetName,
+          targetHandle = targetHandle,
+          targetAvatarUrl = targetAvatarUrl
+        ).onSuccess {
+          val following = (followingState.value as? UiState.Success)?.data.orEmpty()
+          if (following.any { it.targetUserId == safeTarget || it.id == safeTarget }) {
+            val stub = PublicProfile(id = safeTarget, userId = safeTarget, displayName = targetName, handle = targetHandle)
+            firestoreRepo.toggleFollowListener(
+              userId = currentUserId,
+              followerName = "",
+              followerHandle = "",
+              followerAvatarUrl = "",
+              target = stub,
+              currentlyFollowing = true
+            )
+          }
+          notifyUser("${targetName.ifBlank { "Kullanıcı" }} engellendi.")
+        }.onFailure {
+          notifyUser(it.localizedMessage ?: "Engelleme işlemi başarısız")
+        }
+      } else {
+        localLibraryDao.upsertBlockedUser(
+          LocalBlockedUserEntity(
+            blockedUserId = safeTarget,
+            displayName = targetName.ifBlank { "Dinleyici" },
+            handle = targetHandle.ifBlank { "@vizyon" },
+            photoUrl = targetAvatarUrl
+          )
+        )
+        localLibraryDao.deleteFollowing(safeTarget)
+        notifyUser("${targetName.ifBlank { "Kullanıcı" }} engellendi.")
+      }
+    }
+  }
+
+  fun unblockUser(blockedUserId: String) {
+    if (blockedUserId.isBlank()) return
+    val safeTarget = sanitizeFirestoreId(blockedUserId)
+    viewModelScope.launch {
+      if (!currentUserId.isNullOrBlank()) {
+        firestoreRepo.unblockUser(currentUserId, safeTarget)
+          .onSuccess { notifyUser("Kullanıcı engeli kaldırıldı.") }
+          .onFailure { notifyUser(it.localizedMessage ?: "Engel kaldırılamadı") }
+      } else {
+        localLibraryDao.deleteBlockedUser(safeTarget)
+        notifyUser("Kullanıcı engeli kaldırıldı.")
+      }
+    }
+  }
+
+  fun reportUser(
+    targetUserId: String,
+    targetType: String = "USER",
+    targetId: String = targetUserId,
+    reason: ReportReason,
+    details: String = ""
+  ) {
+    if (targetUserId.isBlank()) return
+    val safeTargetUser = sanitizeFirestoreId(targetUserId)
+    if (safeTargetUser == currentUserId) {
+      notifyUser("Kendi hesabını şikayet edemezsin.")
+      return
+    }
+    viewModelScope.launch {
+      if (!currentUserId.isNullOrBlank()) {
+        firestoreRepo.submitUserReport(
+          reporterId = currentUserId,
+          targetUserId = safeTargetUser,
+          targetType = targetType,
+          targetId = targetId,
+          reason = reason,
+          details = details
+        ).onSuccess {
+          notifyUser("Şikayetin incelemeye alındı. Teşekkür ederiz.")
+        }.onFailure {
+          notifyUser(it.localizedMessage ?: "Şikayet gönderilemedi")
+        }
+      } else {
+        notifyUser("Şikayetin kaydedildi (${reason.label}).")
+      }
+    }
+  }
+
+  fun sendMessageRequest(
+    peer: PublicProfile,
+    previewText: String,
+    messageType: DirectMessageType = DirectMessageType.TEXT,
+    audioBase64: String = "",
+    audioDurationMs: Long = 0L
+  ) {
+    val rawPeerId = peer.userId.ifBlank { peer.id }
+    if (rawPeerId.isBlank()) return
+    val safePeerId = sanitizeFirestoreId(rawPeerId)
+    if (safePeerId == currentUserId || safePeerId == "local") {
+      notifyUser("Kendine mesaj isteği gönderemezsin.")
+      return
+    }
+    if (safePeerId in currentBlockedIdSet()) {
+      notifyUser("Engellenen kullanıcıya mesaj isteği gönderilemez.")
+      return
+    }
+    if (currentUserId.isNullOrBlank()) {
+      notifyUser("Mesaj isteği göndermek için Google hesabınla oturum açmalısın.")
+      return
+    }
+    val me = (userProfileState.value as? UiState.Success)?.data
+    val myName = me?.displayName?.ifBlank { "Vizyon Dinleyicisi" } ?: "Vizyon Dinleyicisi"
+    val myHandle = me?.handle?.ifBlank { "@vizyon" } ?: "@vizyon"
+    val myAvatar = resolvedCurrentUserAvatar()
+    StudioSoundEngine.playMessageSendChime(appContext)
+    viewModelScope.launch {
+      firestoreRepo.sendMessageRequest(
+        requesterId = currentUserId,
+        requesterName = myName,
+        requesterHandle = myHandle,
+        requesterAvatarUrl = myAvatar,
+        recipientId = safePeerId,
+        previewText = previewText,
+        messageType = messageType,
+        audioBase64 = audioBase64,
+        audioDurationMs = audioDurationMs
+      ).onSuccess {
+        notifyUser("${peer.displayName} kullanıcısına mesaj isteği gönderildi!")
+        firestoreRepo.sendNotification(
+          recipientUserId = safePeerId,
+          senderId = currentUserId,
+          senderName = myName,
+          senderHandle = myHandle,
+          senderAvatarUrl = myAvatar,
+          type = NotificationType.MESSAGE_REQUEST,
+          message =
+            if (messageType == DirectMessageType.VOICE) "Sana sesli mesaj isteği gönderdi."
+            else previewText.trim().ifBlank { "Sana mesaj isteği gönderdi." }.take(120),
+          targetType = "REQUESTS",
+          targetId = currentUserId
+        )
+      }.onFailure {
+        notifyUser(it.localizedMessage ?: "Mesaj isteği gönderilemedi.")
+      }
+    }
+  }
+
+  fun respondToFollowRequest(request: FollowRequest, accept: Boolean) {
+    val uid = currentUserId ?: return
+    val me = (userProfileState.value as? UiState.Success)?.data
+    val myName = me?.displayName?.ifBlank { "Vizyon Dinleyicisi" } ?: "Vizyon Dinleyicisi"
+    val myHandle = me?.handle?.ifBlank { "@vizyon" } ?: "@vizyon"
+    val myAvatar = resolvedCurrentUserAvatar()
+    viewModelScope.launch {
+      firestoreRepo.respondToFollowRequest(
+        recipientId = uid,
+        request = request,
+        accept = accept,
+        recipientName = myName,
+        recipientHandle = myHandle,
+        recipientAvatarUrl = myAvatar
+      ).onSuccess {
+        notifyUser(
+          if (accept) "${request.requesterName} takip isteği kabul edildi."
+          else "${request.requesterName} takip isteği reddedildi."
+        )
+      }.onFailure {
+        notifyUser(it.localizedMessage ?: "İstek yanıtlanamadı.")
+      }
+    }
+  }
+
+  fun respondToMessageRequest(
+    request: MessageRequest,
+    accept: Boolean,
+    openChatOnAccept: Boolean = true
+  ) {
+    val uid = currentUserId ?: return
+    val me = (userProfileState.value as? UiState.Success)?.data
+    val myName = me?.displayName?.ifBlank { "Vizyon Dinleyicisi" } ?: "Vizyon Dinleyicisi"
+    val myHandle = me?.handle?.ifBlank { "@vizyon" } ?: "@vizyon"
+    val myAvatar = resolvedCurrentUserAvatar()
+    viewModelScope.launch {
+      firestoreRepo.respondToMessageRequest(
+        recipientId = uid,
+        request = request,
+        accept = accept,
+        recipientName = myName,
+        recipientHandle = myHandle,
+        recipientAvatarUrl = myAvatar
+      ).onSuccess { createdChatId ->
+        if (accept) {
+          notifyUser("${request.requesterName} mesaj isteği kabul edildi.")
+          if (openChatOnAccept && !createdChatId.isNullOrBlank()) {
+            val reqUid = sanitizeFirestoreId(request.requesterId.ifBlank { request.id })
+            if (reqUid.isNotBlank()) {
+              _activeChatPeer.value = PublicProfile(
+                id = reqUid,
+                userId = reqUid,
+                displayName = request.requesterName.ifBlank { "Dinleyici" },
+                handle = request.requesterHandle.ifBlank { "@vizyon" },
+                photoUrl = request.requesterAvatarUrl
+              )
+            }
+          }
+        } else {
+          notifyUser("Mesaj isteği reddedildi.")
+        }
+      }.onFailure {
+        notifyUser(it.localizedMessage ?: "Mesaj isteği yanıtlanamadı.")
+      }
+    }
+  }
+
   fun inspectFollowLists(userId: String) {
+    if (userId.isBlank()) return
     _inspectedFollowUserId.value = sanitizeFirestoreId(userId)
   }
 
@@ -1425,23 +1895,38 @@ class VizyonMainViewModel(
   }
 
   fun openListenerProfileById(userId: String) {
+    if (userId.isBlank()) return
     val cleanId = sanitizeFirestoreId(userId)
-    if (cleanId.isNotBlank()) {
-      _pendingDeepLink.value = NotificationDeepLinkTarget.OpenListenerProfile(cleanId)
+    if (cleanId in currentBlockedIdSet()) {
+      notifyUser("Bu kullanıcı engellendiği için profili açılamıyor.")
+      return
     }
+    _pendingDeepLink.value = NotificationDeepLinkTarget.OpenListenerProfile(cleanId)
   }
 
   fun openDirectChat(peer: PublicProfile) {
-    val safePeerId = sanitizeFirestoreId(peer.userId.ifBlank { peer.id })
-    if (safePeerId.isBlank() || safePeerId == currentUserId) {
+    val rawPeerId = peer.userId.ifBlank { peer.id }
+    if (rawPeerId.isBlank()) return
+    val safePeerId = sanitizeFirestoreId(rawPeerId)
+    if (safePeerId == currentUserId || safePeerId == "local") {
       notifyUser("Kendine mesaj gönderemezsin.")
+      return
+    }
+    if (safePeerId in currentBlockedIdSet()) {
+      notifyUser("Engellediğin kullanıcıyla sohbet açılamaz.")
       return
     }
     _activeChatPeer.value = peer
   }
 
   fun openDirectChatById(userId: String) {
+    if (userId.isBlank()) return
     val safeId = sanitizeFirestoreId(userId)
+    if (safeId == currentUserId || safeId == "local") return
+    if (safeId in currentBlockedIdSet()) {
+      notifyUser("Engellediğin kullanıcıyla sohbet açılamaz.")
+      return
+    }
     val listeners = (publicListenersState.value as? UiState.Success)?.data.orEmpty()
     val found =
       listeners.firstOrNull { sanitizeFirestoreId(it.userId.ifBlank { it.id }) == safeId }
@@ -1464,9 +1949,21 @@ class VizyonMainViewModel(
     _activeChatPeer.value = null
   }
 
+  private fun isConnectedWithPeer(peerId: String): Boolean {
+    val followingIds = (followingState.value as? UiState.Success)?.data?.map { it.targetUserId }.orEmpty()
+    val followerIds = (followersState.value as? UiState.Success)?.data?.map { it.targetUserId }.orEmpty()
+    return peerId in followingIds || peerId in followerIds
+  }
+
   fun sendDirectMessage(text: String, attachedTrack: MusicTrack? = null) {
     val peer = _activeChatPeer.value ?: return
-    val peerId = sanitizeFirestoreId(peer.userId.ifBlank { peer.id })
+    val rawPeerId = peer.userId.ifBlank { peer.id }
+    if (rawPeerId.isBlank()) return
+    val peerId = sanitizeFirestoreId(rawPeerId)
+    if (peerId in currentBlockedIdSet()) {
+      notifyUser("Engellenen kullanıcıya mesaj gönderilemez.")
+      return
+    }
     val cleanText =
       text.trim().ifBlank {
         attachedTrack?.let { "♪ ${it.title} — ${it.artistName}" } ?: ""
@@ -1476,13 +1973,9 @@ class VizyonMainViewModel(
       return
     }
 
-    if (ChatPrivacy.fromRaw(peer.chatPrivacy) == ChatPrivacy.FOLLOWERS_ONLY) {
-      val followingIds = (followingState.value as? UiState.Success)?.data?.map { it.targetUserId }.orEmpty()
-      val followerIds = (followersState.value as? UiState.Success)?.data?.map { it.targetUserId }.orEmpty()
-      if (peerId !in followingIds && peerId !in followerIds) {
-        notifyUser("${peer.displayName} yalnızca takipçilerinden mesaj kabul ediyor. Önce takip et.")
-        return
-      }
+    if (ChatPrivacy.fromRaw(peer.chatPrivacy) == ChatPrivacy.FOLLOWERS_ONLY && !isConnectedWithPeer(peerId)) {
+      sendMessageRequest(peer = peer, previewText = cleanText, messageType = DirectMessageType.TEXT)
+      return
     }
 
     val me = (userProfileState.value as? UiState.Success)?.data
@@ -1534,6 +2027,7 @@ class VizyonMainViewModel(
             senderHandle = myHandle,
             senderAvatarUrl = myAvatar,
             text = cleanText,
+            messageType = if (attachedTrack != null) DirectMessageType.TRACK.name else DirectMessageType.TEXT.name,
             trackId = attachedTrack?.trackId.orEmpty(),
             trackTitle = attachedTrack?.title.orEmpty(),
             artistName = attachedTrack?.artistName.orEmpty(),
@@ -1546,10 +2040,98 @@ class VizyonMainViewModel(
     }
   }
 
+  fun sendVoiceDirectMessage(
+    audioBase64: String,
+    durationMs: Long,
+    caption: String = ""
+  ) {
+    val peer = _activeChatPeer.value ?: return
+    val rawPeerId = peer.userId.ifBlank { peer.id }
+    if (rawPeerId.isBlank() || audioBase64.isBlank()) return
+    val peerId = sanitizeFirestoreId(rawPeerId)
+    if (peerId in currentBlockedIdSet()) {
+      notifyUser("Engellenen kullanıcıya sesli mesaj gönderilemez.")
+      return
+    }
+    if (ChatPrivacy.fromRaw(peer.chatPrivacy) == ChatPrivacy.FOLLOWERS_ONLY && !isConnectedWithPeer(peerId)) {
+      sendMessageRequest(
+        peer = peer,
+        previewText = caption,
+        messageType = DirectMessageType.VOICE,
+        audioBase64 = audioBase64,
+        audioDurationMs = durationMs
+      )
+      return
+    }
+
+    val me = (userProfileState.value as? UiState.Success)?.data
+    val myName = me?.displayName?.ifBlank { "Vizyon Dinleyicisi" } ?: "Vizyon Dinleyicisi"
+    val myHandle = me?.handle?.ifBlank { "@vizyon" } ?: "@vizyon"
+    val myAvatar = resolvedCurrentUserAvatar()
+    val secLabel = ((durationMs + 500L) / 1000L).coerceIn(1L, 30L).toString().padStart(2, '0')
+    val cleanText = caption.trim().ifBlank { "🎤 Sesli mesaj (0:$secLabel)" }
+
+    StudioSoundEngine.playMessageSendChime(appContext)
+    viewModelScope.launch {
+      if (!currentUserId.isNullOrBlank()) {
+        firestoreRepo
+          .sendDirectMessage(
+            senderId = currentUserId,
+            senderName = myName,
+            senderHandle = myHandle,
+            senderAvatarUrl = myAvatar,
+            peer = peer,
+            text = cleanText,
+            messageType = DirectMessageType.VOICE,
+            audioBase64 = audioBase64,
+            audioDurationMs = durationMs
+          )
+          .onSuccess {
+            firestoreRepo.sendNotification(
+              recipientUserId = peerId,
+              senderId = currentUserId,
+              senderName = myName,
+              senderHandle = myHandle,
+              senderAvatarUrl = myAvatar,
+              type = NotificationType.VOICE_MESSAGE,
+              message = cleanText.take(120),
+              targetType = "CHAT",
+              targetId = currentUserId
+            )
+          }
+          .onFailure { notifyUser(it.localizedMessage ?: "Sesli mesaj gönderilemedi") }
+      } else {
+        val chatId = buildDirectChatId("local", peerId)
+        localLibraryDao.insertDirectMessage(
+          LocalDirectMessageEntity(
+            id = sanitizeFirestoreId("msg_${UUID.randomUUID().toString().take(12)}"),
+            chatId = chatId,
+            peerId = peerId,
+            peerName = peer.displayName.ifBlank { "Dinleyici" },
+            peerHandle = peer.handle.ifBlank { "@vizyon" },
+            peerAvatarUrl = peer.photoUrl,
+            senderId = "local",
+            senderName = myName,
+            senderHandle = myHandle,
+            senderAvatarUrl = myAvatar,
+            text = cleanText,
+            messageType = DirectMessageType.VOICE.name,
+            audioBase64 = audioBase64,
+            audioDurationMs = durationMs
+          )
+        )
+      }
+    }
+  }
+
   fun deleteDirectChat(peerId: String) {
+    if (peerId.isBlank()) return
     val safePeerId = sanitizeFirestoreId(peerId)
     if (safePeerId.isBlank()) return
-    val openPeerId = _activeChatPeer.value?.let { sanitizeFirestoreId(it.userId.ifBlank { it.id }) }
+    val openPeerId = _activeChatPeer.value?.let {
+      val raw = it.userId.ifBlank { it.id }
+      if (raw.isBlank()) null else sanitizeFirestoreId(raw)
+    }
     if (openPeerId == safePeerId) {
       _activeChatPeer.value = null
     }
@@ -1569,6 +2151,7 @@ class VizyonMainViewModel(
   }
 
   fun deleteDirectMessage(peerId: String, messageId: String) {
+    if (peerId.isBlank() || messageId.isBlank()) return
     val safePeerId = sanitizeFirestoreId(peerId)
     val safeMsgId = sanitizeFirestoreId(messageId)
     if (safePeerId.isBlank() || safeMsgId.isBlank()) return
@@ -1913,10 +2496,13 @@ class VizyonMainViewModel(
   }
 
   fun handleNotificationTap(notification: UserNotification) {
-    markNotificationRead(notification.id)
+    if (notification.id.isNotBlank()) {
+      markNotificationRead(notification.id)
+    }
     val nType = NotificationType.fromRaw(notification.type)
     val target =
       when (notification.targetType.uppercase()) {
+        "REQUESTS" -> NotificationDeepLinkTarget.OpenRequests
         "CHAT" ->
           if (notification.targetId.isNotBlank()) NotificationDeepLinkTarget.OpenChat(notification.targetId)
           else if (notification.senderId.isNotBlank()) NotificationDeepLinkTarget.OpenChat(notification.senderId)
@@ -1933,7 +2519,9 @@ class VizyonMainViewModel(
           else NotificationDeepLinkTarget.OpenFeed
         else ->
           when (nType) {
-            NotificationType.MESSAGE ->
+            NotificationType.FOLLOW_REQUEST, NotificationType.MESSAGE_REQUEST ->
+              NotificationDeepLinkTarget.OpenRequests
+            NotificationType.MESSAGE, NotificationType.VOICE_MESSAGE ->
               if (notification.senderId.isNotBlank()) NotificationDeepLinkTarget.OpenChat(notification.senderId)
               else NotificationDeepLinkTarget.OpenFeed
             NotificationType.FOLLOW ->
@@ -2068,7 +2656,32 @@ class VizyonMainViewModel(
   fun updateNotificationsEnabled(enabled: Boolean) =
     viewModelScope.launch {
       appearancePrefs.updateNotificationsEnabled(enabled)
+      val cfg = appearanceState.value.copy(notificationsEnabled = enabled)
+      syncBackgroundNotifService(cfg)
       notifyUser(if (enabled) "Sosyal bildirimler etkinleştirildi" else "Sosyal bildirimler sessize alındı")
+    }
+
+  fun updateBackgroundNotifServiceEnabled(enabled: Boolean) =
+    viewModelScope.launch {
+      appearancePrefs.updateBackgroundNotifServiceEnabled(enabled)
+      val cfg = appearanceState.value.copy(backgroundNotifServiceEnabled = enabled)
+      syncBackgroundNotifService(cfg)
+      notifyUser(
+        if (enabled) "Arka plan canlı bildirim servisi etkinleştirildi."
+        else "Arka plan canlı bildirim servisi durduruldu."
+      )
+    }
+
+  fun updateRequireFollowApproval(enabled: Boolean) =
+    viewModelScope.launch {
+      appearancePrefs.updateRequireFollowApproval(enabled)
+      if (!currentUserId.isNullOrBlank()) {
+        firestoreRepo.updateCloudBackupFields(currentUserId, mapOf("requireFollowApproval" to enabled))
+      }
+      notifyUser(
+        if (enabled) "Yeni takipçiler için onay isteği etkinleştirildi."
+        else "Herkes doğrudan seni takip edebilir."
+      )
     }
 
   fun updateUserProfile(displayName: String, handle: String, bio: String, shareActivity: Boolean) {
@@ -2160,7 +2773,21 @@ class VizyonMainViewModel(
   }
 
   fun updateCompactCards(compact: Boolean) = viewModelScope.launch { appearancePrefs.updateCompactCards(compact) }
-  fun updateShareListening(enabled: Boolean) = viewModelScope.launch { appearancePrefs.updateShareListeningActivity(enabled) }
+
+  fun updateShareListening(enabled: Boolean) = viewModelScope.launch {
+    appearancePrefs.updateShareListeningActivity(enabled)
+    if (!currentUserId.isNullOrBlank()) {
+      if (enabled) {
+        firestoreRepo.updateCloudBackupFields(currentUserId, mapOf("shareActivity" to true))
+      } else {
+        firestoreRepo.clearPublicListeningStatus(currentUserId)
+      }
+    }
+    notifyUser(
+      if (enabled) "Son dinlediğin müzik profilinde gösterilecek."
+      else "Dinlediğin son müzik gizlendi; profilin keşifte görünmeye devam ediyor."
+    )
+  }
 
   private fun resolvedCurrentUserAvatar(): String {
     val profilePhoto = (userProfileState.value as? UiState.Success)?.data?.photoUrl.orEmpty()

@@ -39,9 +39,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.material.icons.rounded.MusicNote
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Share
@@ -343,7 +345,9 @@ fun StoryViewerOverlay(
   onDeleteStory: (String) -> Unit,
   onNotifyMessage: (String) -> Unit,
   onOpenAuthorProfile: (() -> Unit)? = null,
-  onMessageAuthor: (() -> Unit)? = null
+  onMessageAuthor: (() -> Unit)? = null,
+  onBlockAuthor: (() -> Unit)? = null,
+  onReportAuthor: (() -> Unit)? = null
 ) {
   BackHandler(enabled = true) { onDismiss() }
   Box(
@@ -361,7 +365,9 @@ fun StoryViewerOverlay(
       onDeleteStory = onDeleteStory,
       onNotifyMessage = onNotifyMessage,
       onOpenAuthorProfile = onOpenAuthorProfile,
-      onMessageAuthor = onMessageAuthor
+      onMessageAuthor = onMessageAuthor,
+      onBlockAuthor = onBlockAuthor,
+      onReportAuthor = onReportAuthor
     )
   }
 }
@@ -375,7 +381,9 @@ fun StoryViewerDialog(
   onDeleteStory: (String) -> Unit,
   onNotifyMessage: (String) -> Unit,
   onOpenAuthorProfile: (() -> Unit)? = null,
-  onMessageAuthor: (() -> Unit)? = null
+  onMessageAuthor: (() -> Unit)? = null,
+  onBlockAuthor: (() -> Unit)? = null,
+  onReportAuthor: (() -> Unit)? = null
 ) {
   Dialog(
     onDismissRequest = onDismiss,
@@ -416,7 +424,9 @@ fun StoryViewerDialog(
       onDeleteStory = onDeleteStory,
       onNotifyMessage = onNotifyMessage,
       onOpenAuthorProfile = onOpenAuthorProfile,
-      onMessageAuthor = onMessageAuthor
+      onMessageAuthor = onMessageAuthor,
+      onBlockAuthor = onBlockAuthor,
+      onReportAuthor = onReportAuthor
     )
   }
 }
@@ -430,7 +440,9 @@ private fun StoryViewerContent(
   onDeleteStory: (String) -> Unit,
   onNotifyMessage: (String) -> Unit,
   onOpenAuthorProfile: (() -> Unit)? = null,
-  onMessageAuthor: (() -> Unit)? = null
+  onMessageAuthor: (() -> Unit)? = null,
+  onBlockAuthor: (() -> Unit)? = null,
+  onReportAuthor: (() -> Unit)? = null
 ) {
   val context = LocalContext.current
   val scope = rememberCoroutineScope()
@@ -510,6 +522,33 @@ private fun StoryViewerContent(
               size = 48.dp,
               modifier = Modifier.testTag("story_viewer_delete_btn")
             )
+          } else {
+            if (onReportAuthor != null) {
+              StudioCircleIconButton(
+                icon = Icons.Rounded.Flag,
+                contentDescription = "Kullanıcıyı şikayet et",
+                onClick = {
+                  onDismiss()
+                  onReportAuthor()
+                },
+                tint = Color(0xFFFBBF24),
+                size = 48.dp,
+                modifier = Modifier.testTag("story_viewer_report_btn")
+              )
+            }
+            if (onBlockAuthor != null) {
+              StudioCircleIconButton(
+                icon = Icons.Rounded.Block,
+                contentDescription = "Kullanıcıyı engelle",
+                onClick = {
+                  onDismiss()
+                  onBlockAuthor()
+                },
+                tint = MaterialTheme.colorScheme.error,
+                size = 48.dp,
+                modifier = Modifier.testTag("story_viewer_block_btn")
+              )
+            }
           }
           StudioCircleIconButton(
             icon = Icons.Rounded.Close,

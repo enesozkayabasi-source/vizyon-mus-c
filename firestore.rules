@@ -66,6 +66,7 @@ service cloud.firestore {
              (!('photoUrl' in data) || isValidAvatarString(data.photoUrl)) &&
              (!('favoriteGenres' in data) || isValidStringList(data.favoriteGenres, 8)) &&
              data.shareActivity is bool &&
+             (!('requireFollowApproval' in data) || data.requireFollowApproval is bool) &&
              (!('chatPrivacy' in data) || isValidChatPrivacy(data.chatPrivacy)) &&
              (!('defaultStoryTheme' in data) || isValidStoryTheme(data.defaultStoryTheme)) &&
              (!('securityPasscodeHash' in data) || (data.securityPasscodeHash is string && data.securityPasscodeHash.size() <= 128)) &&
@@ -89,6 +90,8 @@ service cloud.firestore {
              (!('bio' in data) || (data.bio is string && data.bio.size() <= 160)) &&
              (!('photoUrl' in data) || isValidAvatarString(data.photoUrl)) &&
              data.discoverable is bool &&
+             (!('shareActivity' in data) || data.shareActivity is bool) &&
+             (!('requireFollowApproval' in data) || data.requireFollowApproval is bool) &&
              (!('chatPrivacy' in data) || isValidChatPrivacy(data.chatPrivacy)) &&
              (!('defaultStoryTheme' in data) || isValidStoryTheme(data.defaultStoryTheme)) &&
              (!('currentTrackTitle' in data) || (data.currentTrackTitle is string && data.currentTrackTitle.size() <= 140)) &&
@@ -141,6 +144,9 @@ service cloud.firestore {
              data.senderHandle is string && data.senderHandle.size() >= 2 && data.senderHandle.size() <= 30 &&
              (!('senderAvatarUrl' in data) || isValidAvatarString(data.senderAvatarUrl)) &&
              data.text is string && data.text.size() >= 1 && data.text.size() <= 600 &&
+             (!('messageType' in data) || data.messageType in ['TEXT', 'TRACK', 'VOICE']) &&
+             (!('audioBase64' in data) || (data.audioBase64 is string && data.audioBase64.size() <= 220000)) &&
+             (!('audioDurationMs' in data) || (data.audioDurationMs is int && data.audioDurationMs >= 0 && data.audioDurationMs <= 30000)) &&
              (!('trackId' in data) || (data.trackId is string && data.trackId.size() <= 128)) &&
              (!('trackTitle' in data) || (data.trackTitle is string && data.trackTitle.size() <= 160)) &&
              (!('artistName' in data) || (data.artistName is string && data.artistName.size() <= 120)) &&
@@ -260,13 +266,68 @@ service cloud.firestore {
              data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 50 &&
              data.senderHandle is string && data.senderHandle.size() >= 2 && data.senderHandle.size() <= 30 &&
              (!('senderAvatarUrl' in data) || isValidAvatarString(data.senderAvatarUrl)) &&
-             data.type in ['FOLLOW', 'LIKE', 'COMMENT', 'REPOST', 'STORY', 'MESSAGE'] &&
+             data.type in ['FOLLOW', 'LIKE', 'COMMENT', 'REPOST', 'STORY', 'MESSAGE', 'FOLLOW_REQUEST', 'MESSAGE_REQUEST', 'VOICE_MESSAGE'] &&
              (!('trackId' in data) || (data.trackId is string && data.trackId.size() <= 128)) &&
              (!('trackTitle' in data) || (data.trackTitle is string && data.trackTitle.size() <= 160)) &&
              data.message is string && data.message.size() >= 1 && data.message.size() <= 240 &&
              (!('targetType' in data) || (data.targetType is string && data.targetType.size() <= 40)) &&
              (!('targetId' in data) || (data.targetId is string && data.targetId.size() <= 128)) &&
              data.read is bool &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidBlockedUser(data) {
+      return data.blockedUserId is string && isValidId(data.blockedUserId) &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 50 &&
+             data.handle is string && data.handle.size() >= 2 && data.handle.size() <= 30 &&
+             (!('photoUrl' in data) || isValidAvatarString(data.photoUrl)) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidUserReport(data) {
+      return data.reporterId is string && data.reporterId == request.auth.uid &&
+             data.targetUserId is string && isValidId(data.targetUserId) &&
+             data.targetType is string && data.targetType.size() >= 1 && data.targetType.size() <= 32 &&
+             data.targetId is string && isValidId(data.targetId) &&
+             data.reason in ['SPAM', 'HARASSMENT', 'INAPPROPRIATE', 'IMPERSONATION', 'OTHER'] &&
+             (!('details' in data) || (data.details is string && data.details.size() <= 300)) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidFollowRequest(data) {
+      return data.requesterId is string && isValidId(data.requesterId) &&
+             data.requesterName is string && data.requesterName.size() >= 1 && data.requesterName.size() <= 50 &&
+             data.requesterHandle is string && data.requesterHandle.size() >= 2 && data.requesterHandle.size() <= 30 &&
+             (!('requesterAvatarUrl' in data) || isValidAvatarString(data.requesterAvatarUrl)) &&
+             data.recipientId is string && isValidId(data.recipientId) &&
+             data.status in ['PENDING', 'ACCEPTED', 'REJECTED'] &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidMessageRequest(data) {
+      return data.requesterId is string && isValidId(data.requesterId) &&
+             data.requesterName is string && data.requesterName.size() >= 1 && data.requesterName.size() <= 50 &&
+             data.requesterHandle is string && data.requesterHandle.size() >= 2 && data.requesterHandle.size() <= 30 &&
+             (!('requesterAvatarUrl' in data) || isValidAvatarString(data.requesterAvatarUrl)) &&
+             data.recipientId is string && isValidId(data.recipientId) &&
+             data.previewText is string && data.previewText.size() >= 1 && data.previewText.size() <= 240 &&
+             (!('messageType' in data) || data.messageType in ['TEXT', 'TRACK', 'VOICE']) &&
+             (!('audioBase64' in data) || (data.audioBase64 is string && data.audioBase64.size() <= 220000)) &&
+             (!('audioDurationMs' in data) || (data.audioDurationMs is int && data.audioDurationMs >= 0 && data.audioDurationMs <= 30000)) &&
+             data.status in ['PENDING', 'ACCEPTED', 'REJECTED'] &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
+    function isValidOutgoingRequest(data) {
+      return data.requesterId is string && isValidId(data.requesterId) &&
+             data.recipientId is string && isValidId(data.recipientId) &&
+             data.requestType in ['FOLLOW', 'MESSAGE'] &&
+             data.status in ['PENDING', 'ACCEPTED', 'REJECTED'] &&
              isValidTimestamp(data.createdAt) &&
              isValidTimestamp(data.updatedAt);
     }
@@ -280,7 +341,7 @@ service cloud.firestore {
                        incoming().keys().hasAll(['userId', 'displayName', 'handle', 'shareActivity', 'createdAt', 'updatedAt']) &&
                        incoming().keys().hasOnly([
                          'userId', 'displayName', 'handle', 'bio', 'photoUrl', 'favoriteGenres', 'shareActivity',
-                         'chatPrivacy', 'defaultStoryTheme', 'securityPasscodeHash', 'securityPasscodeSalt',
+                         'requireFollowApproval', 'chatPrivacy', 'defaultStoryTheme', 'securityPasscodeHash', 'securityPasscodeSalt',
                          'rememberMe', 'lockOnLaunch', 'preferredThemeMode', 'preferredAccentPalette',
                          'preferredCornerDensity', 'preferredLanguage', 'onboardingCompleted', 'recentTracks',
                          'createdAt', 'updatedAt'
@@ -292,7 +353,7 @@ service cloud.firestore {
                        incoming().createdAt == existing().createdAt &&
                        incoming().diff(existing()).affectedKeys().hasOnly([
                          'displayName', 'handle', 'bio', 'photoUrl', 'favoriteGenres', 'shareActivity',
-                         'chatPrivacy', 'defaultStoryTheme', 'securityPasscodeHash', 'securityPasscodeSalt',
+                         'requireFollowApproval', 'chatPrivacy', 'defaultStoryTheme', 'securityPasscodeHash', 'securityPasscodeSalt',
                          'rememberMe', 'lockOnLaunch', 'preferredThemeMode', 'preferredAccentPalette',
                          'preferredCornerDensity', 'preferredLanguage', 'onboardingCompleted', 'recentTracks',
                          'updatedAt'
@@ -302,7 +363,10 @@ service cloud.firestore {
       match /following/{targetUserId} {
         allow get: if isSignedIn() && isValidId(userId) && isValidId(targetUserId);
         allow list: if isSignedIn() && isValidId(userId);
-        allow create: if isOwner(userId) && isValidId(targetUserId) &&
+        allow create: if isSignedIn() && isValidId(userId) && isValidId(targetUserId) &&
+                         (isOwner(userId) ||
+                          (request.auth.uid == targetUserId &&
+                           exists(/databases/$(database)/documents/users/$(targetUserId)/follow_requests/$(userId)))) &&
                          incoming().targetUserId == targetUserId &&
                          incoming().keys().hasAll(['targetUserId', 'displayName', 'handle', 'createdAt', 'updatedAt']) &&
                          incoming().keys().hasOnly(['targetUserId', 'displayName', 'handle', 'photoUrl', 'createdAt', 'updatedAt']) &&
@@ -319,7 +383,7 @@ service cloud.firestore {
         allow get: if isSignedIn() && isValidId(userId) && isValidId(followerId);
         allow list: if isSignedIn() && isValidId(userId);
         allow create: if isSignedIn() && isValidId(userId) && isValidId(followerId) &&
-                         request.auth.uid == followerId &&
+                         (isOwner(userId) || request.auth.uid == followerId) &&
                          incoming().targetUserId == followerId &&
                          incoming().keys().hasAll(['targetUserId', 'displayName', 'handle', 'createdAt', 'updatedAt']) &&
                          incoming().keys().hasOnly(['targetUserId', 'displayName', 'handle', 'photoUrl', 'createdAt', 'updatedAt']) &&
@@ -332,6 +396,81 @@ service cloud.firestore {
                          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'handle', 'photoUrl', 'updatedAt']);
         allow delete: if isSignedIn() && isValidId(userId) && isValidId(followerId) &&
                          (isOwner(userId) || request.auth.uid == followerId);
+      }
+
+      match /blocked_users/{blockedUserId} {
+        allow get: if isOwner(userId) && isValidId(blockedUserId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(blockedUserId) &&
+                         incoming().blockedUserId == blockedUserId &&
+                         incoming().keys().hasAll(['blockedUserId', 'displayName', 'handle', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['blockedUserId', 'displayName', 'handle', 'photoUrl', 'createdAt', 'updatedAt']) &&
+                         isValidBlockedUser(incoming());
+        allow update: if false;
+        allow delete: if isOwner(userId) && isValidId(blockedUserId);
+      }
+
+      match /follow_requests/{requesterId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(requesterId) && (isOwner(userId) || request.auth.uid == requesterId);
+        allow list: if isOwner(userId);
+        allow create: if isSignedIn() && isValidId(userId) && isValidId(requesterId) &&
+                         request.auth.uid == requesterId &&
+                         userId != requesterId &&
+                         incoming().requesterId == requesterId &&
+                         incoming().recipientId == userId &&
+                         incoming().status == 'PENDING' &&
+                         incoming().keys().hasAll(['requesterId', 'requesterName', 'requesterHandle', 'recipientId', 'status', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['requesterId', 'requesterName', 'requesterHandle', 'requesterAvatarUrl', 'recipientId', 'status', 'createdAt', 'updatedAt']) &&
+                         isValidFollowRequest(incoming());
+        allow update: if isOwner(userId) && isValidId(requesterId) &&
+                         isValidFollowRequest(incoming()) &&
+                         incoming().requesterId == existing().requesterId &&
+                         incoming().recipientId == existing().recipientId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(requesterId) && (isOwner(userId) || request.auth.uid == requesterId);
+      }
+
+      match /message_requests/{requesterId} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(requesterId) && (isOwner(userId) || request.auth.uid == requesterId);
+        allow list: if isOwner(userId);
+        allow create: if isSignedIn() && isValidId(userId) && isValidId(requesterId) &&
+                         request.auth.uid == requesterId &&
+                         userId != requesterId &&
+                         incoming().requesterId == requesterId &&
+                         incoming().recipientId == userId &&
+                         incoming().status == 'PENDING' &&
+                         incoming().keys().hasAll(['requesterId', 'requesterName', 'requesterHandle', 'recipientId', 'previewText', 'status', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['requesterId', 'requesterName', 'requesterHandle', 'requesterAvatarUrl', 'recipientId', 'previewText', 'messageType', 'audioBase64', 'audioDurationMs', 'status', 'createdAt', 'updatedAt']) &&
+                         isValidMessageRequest(incoming());
+        allow update: if isOwner(userId) && isValidId(requesterId) &&
+                         isValidMessageRequest(incoming()) &&
+                         incoming().requesterId == existing().requesterId &&
+                         incoming().recipientId == existing().recipientId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+        allow delete: if isSignedIn() && isValidId(userId) && isValidId(requesterId) && (isOwner(userId) || request.auth.uid == requesterId);
+      }
+
+      match /outgoing_requests/{requestKey} {
+        allow get: if isOwner(userId) && isValidId(requestKey);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(requestKey) &&
+                         incoming().requesterId == userId &&
+                         incoming().status == 'PENDING' &&
+                         incoming().keys().hasAll(['requesterId', 'recipientId', 'requestType', 'status', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['requesterId', 'recipientId', 'requestType', 'status', 'createdAt', 'updatedAt']) &&
+                         isValidOutgoingRequest(incoming());
+        allow update: if isSignedIn() && isValidId(requestKey) &&
+                         (isOwner(userId) || resource.data.recipientId == request.auth.uid) &&
+                         isValidOutgoingRequest(incoming()) &&
+                         incoming().requesterId == existing().requesterId &&
+                         incoming().recipientId == existing().recipientId &&
+                         incoming().requestType == existing().requestType &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+        allow delete: if isSignedIn() && isValidId(requestKey) &&
+                         (isOwner(userId) || resource.data.recipientId == request.auth.uid);
       }
 
       match /notifications/{notificationId} {
@@ -434,7 +573,7 @@ service cloud.firestore {
                        incoming().keys().hasAll(['userId', 'displayName', 'handle', 'discoverable', 'followerCount', 'createdAt', 'updatedAt']) &&
                        incoming().keys().hasOnly([
                          'userId', 'displayName', 'handle', 'bio', 'photoUrl', 'discoverable',
-                         'chatPrivacy', 'defaultStoryTheme',
+                         'shareActivity', 'requireFollowApproval', 'chatPrivacy', 'defaultStoryTheme',
                          'currentTrackTitle', 'currentArtistName', 'lastTrackId', 'lastTrackTitle',
                          'lastArtistId', 'lastArtistName', 'lastTrackArtworkUrl', 'lastTrackYoutubeId',
                          'lastPlayedAtMillis', 'recentTracks', 'followerCount', 'followingCount',
@@ -448,7 +587,7 @@ service cloud.firestore {
                          (isOwner(userId) &&
                           incoming().diff(existing()).affectedKeys().hasOnly([
                             'displayName', 'handle', 'bio', 'photoUrl', 'discoverable',
-                            'chatPrivacy', 'defaultStoryTheme',
+                            'shareActivity', 'requireFollowApproval', 'chatPrivacy', 'defaultStoryTheme',
                             'currentTrackTitle', 'currentArtistName', 'lastTrackId', 'lastTrackTitle',
                             'lastArtistId', 'lastArtistName', 'lastTrackArtworkUrl', 'lastTrackYoutubeId',
                             'lastPlayedAtMillis', 'recentTracks', 'followerCount', 'followingCount', 'updatedAt'
@@ -591,7 +730,8 @@ service cloud.firestore {
                          incoming().keys().hasAll(['chatId', 'participantIds', 'senderId', 'senderName', 'senderHandle', 'text', 'createdAt', 'updatedAt']) &&
                          incoming().keys().hasOnly([
                            'chatId', 'participantIds', 'senderId', 'senderName', 'senderHandle', 'senderAvatarUrl',
-                           'text', 'trackId', 'trackTitle', 'artistName', 'albumArtUrl', 'youtubeVideoId', 'source',
+                           'text', 'messageType', 'audioBase64', 'audioDurationMs',
+                           'trackId', 'trackTitle', 'artistName', 'albumArtUrl', 'youtubeVideoId', 'source',
                            'createdAt', 'updatedAt'
                          ]) &&
                          isValidDirectChatMessage(incoming());
@@ -599,6 +739,18 @@ service cloud.firestore {
         allow delete: if isSignedIn() && isValidId(chatId) && isValidId(messageId) &&
                          (resource.data.senderId == request.auth.uid || request.auth.uid in resource.data.participantIds);
       }
+    }
+
+    match /user_reports/{reportId} {
+      allow get: if isSignedIn() && isValidId(reportId) && (resource == null || resource.data.reporterId == request.auth.uid);
+      allow list: if isSignedIn() && resource.data.reporterId == request.auth.uid;
+      allow create: if isSignedIn() && isValidId(reportId) &&
+                       incoming().reporterId == request.auth.uid &&
+                       incoming().keys().hasAll(['reporterId', 'targetUserId', 'targetType', 'targetId', 'reason', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['reporterId', 'targetUserId', 'targetType', 'targetId', 'reason', 'details', 'createdAt', 'updatedAt']) &&
+                       isValidUserReport(incoming());
+      allow update: if false;
+      allow delete: if false;
     }
   }
 }

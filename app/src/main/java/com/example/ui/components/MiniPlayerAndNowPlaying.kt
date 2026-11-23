@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -204,13 +205,14 @@ fun MiniPlayerBar(
     Column {
       Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+        modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
       ) {
-        // Live mini video player directly in place of the album cover
+        // Live mini exact 16:9 video player directly in place of the album cover
         Box(
           modifier =
-            Modifier.width(82.dp)
-              .height(46.dp)
+            Modifier.width(116.dp)
+              .aspectRatio(16f / 9f)
+              .clip(RoundedCornerShape(12.dp))
               .testTag("mini_player_live_video_slot")
         ) {
           YouTubeIframePlayerBox(

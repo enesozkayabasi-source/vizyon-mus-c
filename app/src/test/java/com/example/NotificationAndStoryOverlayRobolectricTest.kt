@@ -11,22 +11,32 @@ import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.test.swipeRight
+import androidx.compose.ui.test.performTextInput
 import com.google.firebase.Timestamp
+import com.example.model.ChatPrivacy
 import com.example.model.DirectChatMessage
 import com.example.model.DirectChatThread
+import com.example.model.DirectMessageType
+import com.example.model.FollowRequest
+import com.example.model.MessageRequest
 import com.example.model.MusicStoryItem
 import com.example.model.NotificationType
 import com.example.model.PublicProfile
+import com.example.model.ReportReason
 import com.example.model.UiState
 import com.example.model.UserNotification
+import com.example.ui.components.BlockUserConfirmDialog
 import com.example.ui.components.DirectChatThreadSheet
 import com.example.ui.components.DirectChatsListSection
 import com.example.ui.components.InAppNotificationBubble
 import com.example.ui.components.NotificationInboxSheet
+import com.example.ui.components.ReportUserDialog
+import com.example.ui.components.RequestsModalSheet
 import com.example.ui.components.SocialFeedTab
 import com.example.ui.components.SocialSegmentedTabs
 import com.example.ui.components.StoryViewerDialog
 import com.example.ui.components.StoryViewerOverlay
+import com.example.ui.components.VaultUnlockDialog
 import com.example.ui.theme.VizyonMusicTheme
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -599,5 +609,185 @@ class NotificationAndStoryOverlayRobolectricTest {
 
     composeTestRule.onNodeWithTag("close_story_viewer_btn").performClick()
     assertTrue(closed)
+  }
+
+  @Test
+  fun consecutiveSixBackgroundNotifications_allPostDistinctlyIncludingRequestsAndVoice() {
+    val context = androidx.test.core.app.ApplicationProvider.getApplicationContext<android.app.Application>()
+    org.robolectric.Shadows.shadowOf(context).grantPermissions(android.Manifest.permission.POST_NOTIFICATIONS)
+    val nm = context.getSystemService(android.content.Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+    nm.cancelAll()
+
+    val types =
+      listOf(
+        NotificationType.FOLLOW_REQUEST,
+        NotificationType.MESSAGE_REQUEST,
+        NotificationType.VOICE_MESSAGE,
+        NotificationType.MESSAGE,
+        NotificationType.MESSAGE,
+        NotificationType.FOLLOW
+      )
+    types.forEachIndexed { idx, nType ->
+      val notif =
+        UserNotification(
+          id = "n_six_${idx + 1}",
+          senderId = "u_sender_six",
+          senderName = "Aylin Demir",
+          type = nType.name,
+          message = "Bildirim testi #${idx + 1}"
+        )
+      com.example.notifications.VizyonNotificationHelper.postSocialNotificationSync(context, notif)
+    }
+
+    val shadowNm = org.robolectric.Shadows.shadowOf(nm)
+    val posted = shadowNm.allNotifications
+    assertTrue(posted.size >= 6)
+    assertTrue(posted.none { (it.flags and android.app.Notification.FLAG_GROUP_SUMMARY) != 0 })
+  }
+
+  @Test
+  fun requestsModalSheet_switchesTabsAndTriggersAcceptDeclineCallbacks() {
+    var acceptedFollowId: String? = null
+    var declinedMsgId: String? = null
+    val followReq =
+      FollowRequest(
+        id = "freq_1",
+        requesterId = "u_req_1",
+        requesterName = "Arda Güler",
+        requesterHandle = "@arda"
+      )
+    val voiceMsgReq =
+      MessageRequest(
+        id = "mreq_voice_1",
+        requesterId = "u_req_2",
+        requesterName = "Zeynep Ak",
+        requesterHandle = "@zeynepak",
+        previewText = "Sesli mesaj isteği gönderdi",
+        messageType = DirectMessageType.VOICE.name,
+        audioBase64 = "UklGRg==",
+        audioDurationMs = 4500L
+      )
+
+    composeTestRule.setContent {
+      VizyonMusicTheme {
+        RequestsModalSheet(
+          followRequestsState = UiState.Success(listOf(followReq)),
+          messageRequestsState = UiState.Success(listOf(voiceMsgReq)),
+          onDismiss = {},
+          onRespondFollowRequest = { req, accept -> if (accept) acceptedFollowId = req.id },
+          onRespondMessageRequest = { req, accept -> if (!accept) declinedMsgId = req.id }
+        )
+      }
+    }
+
+    composeTestRule.mainClock.advanceTimeBy(350L)
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("requests_modal_sheet").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("accept_follow_req_freq_1").performClick()
+    assertEquals("freq_1", acceptedFollowId)
+
+    composeTestRule.onNodeWithTag("requests_tab_message").performClick()
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("play_msg_req_voice_mreq_voice_1").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("decline_msg_req_mreq_voice_1").performClick()
+    assertEquals("mreq_voice_1", declinedMsgId)
+  }
+
+  @Test
+  fun directChatThreadSheet_followersOnlyPeer_allowsSendingMessageRequestAndShowsVoiceRecordBtn() {
+    var sentRequestText: String? = null
+    val peer =
+      PublicProfile(
+        id = "u_private_peer",
+        userId = "u_private_peer",
+        displayName = "Kerem Soylu",
+        handle = "@kerem",
+        chatPrivacy = ChatPrivacy.FOLLOWERS_ONLY.name
+      )
+
+    composeTestRule.setContent {
+      VizyonMusicTheme {
+        DirectChatThreadSheet(
+          peer = peer,
+          currentUserId = "local",
+          isFollowerOrFollowing = false,
+          messagesState = UiState.Success(emptyList()),
+          currentTrack = null,
+          candidateTracks = emptyList(),
+          onDismiss = {},
+          onSendMessage = { _, _ -> },
+          onPlayTrack = {},
+          onSendMessageRequest = { sentRequestText = it }
+        )
+      }
+    }
+
+    composeTestRule.mainClock.advanceTimeBy(350L)
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("direct_chat_request_banner").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("direct_chat_voice_record_btn").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("direct_chat_input").performTextInput("Merhaba takip isteği gönderdim")
+    composeTestRule.onNodeWithTag("direct_chat_send_btn").performClick()
+    composeTestRule.waitForIdle()
+    assertEquals("Merhaba takip isteği gönderdim", sentRequestText)
+  }
+
+  @Test
+  fun reportUserDialog_selectsReasonAndSubmits() {
+    var reportedReason: ReportReason? = null
+    composeTestRule.setContent {
+      VizyonMusicTheme {
+        ReportUserDialog(
+          targetDisplayName = "Test Kullanıcı",
+          onDismiss = {},
+          onSubmitReport = { reason, _ -> reportedReason = reason }
+        )
+      }
+    }
+
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("report_user_dialog").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("report_reason_HARASSMENT").performClick()
+    composeTestRule.onNodeWithTag("submit_report_btn").performClick()
+    assertEquals(ReportReason.HARASSMENT, reportedReason)
+  }
+
+  @Test
+  fun blockUserConfirmDialog_confirmsBlockAction() {
+    var blockedConfirmed = false
+    composeTestRule.setContent {
+      VizyonMusicTheme {
+        BlockUserConfirmDialog(
+          targetDisplayName = "Test Kullanıcı",
+          onDismiss = {},
+          onConfirmBlock = { blockedConfirmed = true }
+        )
+      }
+    }
+
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("block_user_confirm_dialog").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("confirm_block_user_btn").performClick()
+    assertTrue(blockedConfirmed)
+  }
+
+  @Test
+  fun vaultUnlockDialog_acceptsFourDigitPasscode() {
+    var unlockedPasscode: String? = null
+    composeTestRule.setContent {
+      VizyonMusicTheme {
+        VaultUnlockDialog(
+          userName = "Deniz",
+          errorMessage = null,
+          onUnlockSubmit = { unlockedPasscode = it }
+        )
+      }
+    }
+
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("vault_unlock_dialog").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("vault_unlock_input").performTextInput("1234")
+    composeTestRule.onNodeWithTag("vault_unlock_btn").performClick()
+    assertEquals("1234", unlockedPasscode)
   }
 }

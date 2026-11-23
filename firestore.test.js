@@ -463,3 +463,191 @@ test("PublicProfile recentTracks (max 5), /stories collection, and STORY deep-li
   await assertFails(bobDb.collection("stories").doc("story_1").delete());
   await assertSucceeds(aliceDb.collection("stories").doc("story_1").delete());
 });
+
+test("Blocking, user reporting, follow/message requests, voice messages, and discoverable=true with shareActivity=false pass rules", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  const charlieDb = testEnv.authenticatedContext(CHARLIE_UID).firestore();
+  const ts = new Date(Date.now() - 2000);
+
+  // Discoverable profile stays searchable even when shareActivity == false
+  await assertSucceeds(
+    aliceDb.collection("public_profiles").doc(ALICE_UID).set({
+      userId: ALICE_UID,
+      displayName: "Alice",
+      handle: "@alice",
+      discoverable: true,
+      shareActivity: false,
+      requireFollowApproval: true,
+      chatPrivacy: "FOLLOWERS_ONLY",
+      followerCount: 0,
+      followingCount: 0,
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+  await assertSucceeds(bobDb.collection("public_profiles").where("discoverable", "==", true).get());
+
+  // User blocking (owner only)
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).collection("blocked_users").doc(CHARLIE_UID).set({
+      blockedUserId: CHARLIE_UID,
+      displayName: "Charlie",
+      handle: "@charlie",
+      photoUrl: "",
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+  await assertFails(bobDb.collection("users").doc(ALICE_UID).collection("blocked_users").get());
+  await assertSucceeds(aliceDb.collection("users").doc(ALICE_UID).collection("blocked_users").get());
+  await assertSucceeds(aliceDb.collection("users").doc(ALICE_UID).collection("blocked_users").doc(CHARLIE_UID).delete());
+
+  // User reporting
+  await assertSucceeds(
+    bobDb.collection("user_reports").doc("rep_1").set({
+      reporterId: BOB_UID,
+      targetUserId: CHARLIE_UID,
+      targetType: "USER",
+      targetId: CHARLIE_UID,
+      reason: "SPAM",
+      details: "Spam paylaşım",
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+  await assertFails(
+    charlieDb.collection("user_reports").doc("rep_spoof").set({
+      reporterId: BOB_UID,
+      targetUserId: ALICE_UID,
+      targetType: "USER",
+      targetId: ALICE_UID,
+      reason: "HARASSMENT",
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+  await assertFails(charlieDb.collection("user_reports").doc("rep_1").get());
+
+  // Follow request -> Alice accepts -> atomic follower + following edges + outgoing cleanup
+  await assertSucceeds(
+    bobDb.collection("users").doc(ALICE_UID).collection("follow_requests").doc(BOB_UID).set({
+      requesterId: BOB_UID,
+      requesterName: "Bob",
+      requesterHandle: "@bob",
+      requesterAvatarUrl: "",
+      recipientId: ALICE_UID,
+      status: "PENDING",
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+  await assertSucceeds(
+    bobDb.collection("users").doc(BOB_UID).collection("outgoing_requests").doc(`follow_${ALICE_UID}`).set({
+      requesterId: BOB_UID,
+      recipientId: ALICE_UID,
+      requestType: "FOLLOW",
+      status: "PENDING",
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+  // Charlie cannot forge a follow request as Bob
+  await assertFails(
+    charlieDb.collection("users").doc(ALICE_UID).collection("follow_requests").doc(BOB_UID).set({
+      requesterId: BOB_UID,
+      requesterName: "Spoof",
+      requesterHandle: "@spoof",
+      recipientId: ALICE_UID,
+      status: "PENDING",
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+  // Alice accepts Bob's follow request
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).collection("followers").doc(BOB_UID).set({
+      targetUserId: BOB_UID,
+      displayName: "Bob",
+      handle: "@bob",
+      photoUrl: "",
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+  await assertSucceeds(
+    aliceDb.collection("users").doc(BOB_UID).collection("following").doc(ALICE_UID).set({
+      targetUserId: ALICE_UID,
+      displayName: "Alice",
+      handle: "@alice",
+      photoUrl: "",
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+  await assertSucceeds(aliceDb.collection("users").doc(ALICE_UID).collection("follow_requests").doc(BOB_UID).delete());
+  await assertSucceeds(aliceDb.collection("users").doc(BOB_UID).collection("outgoing_requests").doc(`follow_${ALICE_UID}`).delete());
+
+  // Message request + voice direct message
+  await assertSucceeds(
+    bobDb.collection("users").doc(ALICE_UID).collection("message_requests").doc(BOB_UID).set({
+      requesterId: BOB_UID,
+      requesterName: "Bob",
+      requesterHandle: "@bob",
+      requesterAvatarUrl: "",
+      recipientId: ALICE_UID,
+      previewText: "Merhaba Alice!",
+      messageType: "TEXT",
+      status: "PENDING",
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+  await assertSucceeds(aliceDb.collection("users").doc(ALICE_UID).collection("message_requests").where("status", "==", "PENDING").get());
+
+  // Voice message in chat
+  const chatId = "dm_alice_123__bob_456";
+  await assertSucceeds(
+    aliceDb.collection("chats").doc(chatId).set({
+      chatId,
+      participantIds: [ALICE_UID, BOB_UID],
+      lastMessageText: "🎤 Sesli mesaj (0:12)",
+      lastSenderId: ALICE_UID,
+      lastMessageAtMillis: Date.now() - 1000,
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+  await assertSucceeds(
+    aliceDb.collection("chats").doc(chatId).collection("messages").doc("msg_voice_1").set({
+      chatId,
+      participantIds: [ALICE_UID, BOB_UID],
+      senderId: ALICE_UID,
+      senderName: "Alice",
+      senderHandle: "@alice",
+      text: "🎤 Sesli mesaj (0:12)",
+      messageType: "VOICE",
+      audioBase64: "AAAAIGZ0eXBNNEEg",
+      audioDurationMs: 12000,
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+  // Over 30s audio must fail rules
+  await assertFails(
+    aliceDb.collection("chats").doc(chatId).collection("messages").doc("msg_voice_too_long").set({
+      chatId,
+      participantIds: [ALICE_UID, BOB_UID],
+      senderId: ALICE_UID,
+      senderName: "Alice",
+      senderHandle: "@alice",
+      text: "🎤 Sesli mesaj (0:45)",
+      messageType: "VOICE",
+      audioBase64: "AAAAIGZ0eXBNNEEg",
+      audioDurationMs: 45000,
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+});
+

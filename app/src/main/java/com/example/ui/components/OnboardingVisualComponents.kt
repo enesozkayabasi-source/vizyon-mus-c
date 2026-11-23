@@ -117,17 +117,17 @@ fun AnimatedWaveformBackdrop(
     ) {
       val w = size.width
       val h = size.height
+      if (w <= 0f || h <= 0f) return@Canvas
       val baseY = h * 0.19f
       val ampPx = 16.dp.toPx()
       staticPath.reset()
-      val stepPx = 20f
-      var x = 0f
-      while (x <= w + stepPx) {
-        val normX = (x / w.coerceAtLeast(1f))
-        val envelope = sin(normX * PI).toFloat().coerceAtLeast(0.08f)
-        val y = baseY + sin(normX * 2.5f * 2f * PI.toFloat()) * ampPx * envelope
-        if (x == 0f) staticPath.moveTo(x, y) else staticPath.lineTo(x, y)
-        x += stepPx
+      val steps = 48
+      for (i in 0..steps) {
+        val normX = i.toFloat() / steps.toFloat()
+        val x = w * normX
+        val envelope = sin(normX * PI).toFloat().coerceIn(0f, 1f)
+        val y = baseY + sin(normX * 2f * 2f * PI.toFloat()) * ampPx * envelope
+        if (i == 0) staticPath.moveTo(x, y) else staticPath.lineTo(x, y)
       }
       drawPath(
         path = staticPath,
@@ -143,22 +143,22 @@ fun AnimatedWaveformBackdrop(
     initialValue = 0f,
     targetValue = (2f * PI).toFloat(),
     animationSpec = infiniteRepeatable(
-      animation = tween(durationMillis = 5200, easing = LinearEasing),
+      animation = tween(durationMillis = 5600, easing = LinearEasing),
       repeatMode = RepeatMode.Restart
     ),
     label = "backdrop_wave_phase"
   )
   val orbDrift by transition.animateFloat(
-    initialValue = -1f,
-    targetValue = 1f,
+    initialValue = 0f,
+    targetValue = (2f * PI).toFloat(),
     animationSpec = infiniteRepeatable(
-      animation = tween(durationMillis = 4600, easing = FastOutSlowInEasing),
-      repeatMode = RepeatMode.Reverse
+      animation = tween(durationMillis = 7200, easing = LinearEasing),
+      repeatMode = RepeatMode.Restart
     ),
     label = "backdrop_orb_drift"
   )
   val amplitudeScale by animateFloatAsState(
-    targetValue = 0.85f + (currentStep * 0.12f) + (selectedGenreCount.coerceAtMost(5) * 0.06f),
+    targetValue = 0.85f + (currentStep * 0.08f) + (selectedGenreCount.coerceAtMost(5) * 0.05f),
     animationSpec = spring(stiffness = Spring.StiffnessLow),
     label = "backdrop_amp_scale"
   )
@@ -172,26 +172,30 @@ fun AnimatedWaveformBackdrop(
   ) {
     val w = size.width
     val h = size.height
+    if (w <= 0f || h <= 0f) return@Canvas
 
-    val orb1 = Offset(w * (0.22f + 0.06f * orbDrift), h * 0.14f)
+    val driftSin = sin(orbDrift.toDouble()).toFloat()
+    val driftCos = cos(orbDrift.toDouble()).toFloat()
+
+    val orb1 = Offset(w * (0.24f + 0.07f * driftSin), h * 0.14f)
     drawCircle(
       brush = Brush.radialGradient(
         colors = listOf(primary.copy(alpha = 0.30f), Color.Transparent),
         center = orb1,
-        radius = w * 0.68f
+        radius = w * 0.72f
       ),
-      radius = w * 0.68f,
+      radius = w * 0.72f,
       center = orb1
     )
 
-    val orb2 = Offset(w * (0.84f - 0.05f * orbDrift), h * 0.28f)
+    val orb2 = Offset(w * (0.82f + 0.06f * driftCos), h * 0.28f)
     drawCircle(
       brush = Brush.radialGradient(
         colors = listOf(secondary.copy(alpha = 0.22f), Color.Transparent),
         center = orb2,
-        radius = w * 0.56f
+        radius = w * 0.60f
       ),
-      radius = w * 0.56f,
+      radius = w * 0.60f,
       center = orb2
     )
 
@@ -200,40 +204,48 @@ fun AnimatedWaveformBackdrop(
       brush = Brush.radialGradient(
         colors = listOf(tertiary.copy(alpha = 0.10f), Color.Transparent),
         center = orb3,
-        radius = w * 0.62f
+        radius = w * 0.65f
       ),
-      radius = w * 0.62f,
+      radius = w * 0.65f,
       center = orb3
     )
 
-    val waveConfigs = listOf(
-      Triple(0.18f, 22.dp.toPx() * amplitudeScale, primary.copy(alpha = 0.32f)),
+    // Strictly integer spatial/temporal frequencies + smooth sin(normX * PI) edge taper
+    // so every loop wraps cleanly from 2*PI back to 0 without seams or horizontal clipping.
+    val waveSpecs = listOf(
+      Triple(0.18f, 22.dp.toPx() * amplitudeScale, primary.copy(alpha = 0.34f)),
       Triple(0.205f, 16.dp.toPx() * amplitudeScale, secondary.copy(alpha = 0.26f)),
-      Triple(0.23f, 11.dp.toPx() * amplitudeScale, tertiary.copy(alpha = 0.18f))
+      Triple(0.23f, 11.dp.toPx() * amplitudeScale, tertiary.copy(alpha = 0.20f))
     )
+    val spatialCycles = floatArrayOf(2f, 3f, 4f)
+    val temporalSpeeds = floatArrayOf(1f, 2f, 1f)
+    val staticPhaseShifts = floatArrayOf(0f, 1.05f, 2.2f)
+    val sampleCount = 72
 
-    waveConfigs.forEachIndexed { idx, (yFactor, ampPx, color) ->
+    waveSpecs.forEachIndexed { idx, (yFactor, ampPx, color) ->
       val path = reusablePaths[idx]
       path.reset()
       val baseY = h * yFactor
-      val stepPx = 14f
-      val freq = 2.4f + idx * 0.75f
-      val phaseOffset = wavePhase * (1f + idx * 0.25f) + idx * 1.1f
-      var x = 0f
-      while (x <= w + stepPx) {
-        val normX = (x / w.coerceAtLeast(1f))
-        val envelope = sin(normX * PI).toFloat().coerceAtLeast(0.08f)
+      val cycles = spatialCycles[idx]
+      val speed = temporalSpeeds[idx]
+      val phaseOffset = wavePhase * speed + staticPhaseShifts[idx]
+      for (s in 0..sampleCount) {
+        val normX = s.toFloat() / sampleCount.toFloat()
+        val x = w * normX
+        val smoothEdge = sin(normX * PI).toFloat().coerceIn(0f, 1f)
+        val envelope = smoothEdge * smoothEdge
+        val primaryWave = sin(normX * cycles * 2f * PI.toFloat() + phaseOffset)
+        val harmonicWave = cos(normX * (cycles + 1f) * 2f * PI.toFloat() - wavePhase)
         val y =
           baseY +
-            sin(normX * freq * 2f * PI.toFloat() + phaseOffset) * ampPx * envelope +
-            cos(normX * 1.3f * PI.toFloat() - wavePhase) * (ampPx * 0.35f) * envelope
-        if (x == 0f) path.moveTo(x, y) else path.lineTo(x, y)
-        x += stepPx
+            primaryWave * ampPx * envelope +
+            harmonicWave * (ampPx * 0.30f) * envelope
+        if (s == 0) path.moveTo(x, y) else path.lineTo(x, y)
       }
       drawPath(
         path = path,
         color = color,
-        style = Stroke(width = (2.2f - idx * 0.45f).dp.toPx(), cap = StrokeCap.Round)
+        style = Stroke(width = (2.3f - idx * 0.45f).dp.toPx(), cap = StrokeCap.Round)
       )
     }
   }
@@ -653,8 +665,10 @@ fun SchemaStepperHeader(
   steps: List<OnboardingStepMeta>,
   currentStep: Int
 ) {
+  val activeMeta = steps.getOrElse(currentStep) { OnboardingStepMeta("Kurulum", "Stüdyo") }
+  val progressPct = (((currentStep + 1).toFloat() / steps.size.coerceAtLeast(1)) * 100).toInt()
   Surface(
-    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.65f),
+    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
     shape = RoundedCornerShape(20.dp),
     modifier =
       Modifier.fillMaxWidth()
@@ -664,49 +678,69 @@ fun SchemaStepperHeader(
           RoundedCornerShape(20.dp)
         )
   ) {
-    Row(
-      verticalAlignment = Alignment.CenterVertically,
-      modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 10.dp)
+    Column(
+      verticalArrangement = Arrangement.spacedBy(8.dp),
+      modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp)
     ) {
-      steps.forEachIndexed { index, meta ->
-        val isCompleted = index < currentStep
-        val isCurrent = index == currentStep
-        val scale by animateFloatAsState(
-          targetValue = if (isCurrent) 1.08f else 1f,
-          animationSpec = spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMedium),
-          label = "stepper_node_scale"
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+        modifier = Modifier.fillMaxWidth()
+      ) {
+        Text(
+          text = activeMeta.headerTitle,
+          style = MaterialTheme.typography.labelLarge,
+          fontWeight = FontWeight.Bold,
+          color = MaterialTheme.colorScheme.onSurface,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+          modifier = Modifier.weight(1f)
         )
-        val nodeBg by animateColorAsState(
-          targetValue =
-            when {
-              isCompleted || isCurrent -> MaterialTheme.colorScheme.primary
-              else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f)
-            },
-          label = "stepper_node_bg"
-        )
-        val labelColor by animateColorAsState(
-          targetValue =
-            when {
-              isCurrent -> MaterialTheme.colorScheme.primary
-              isCompleted -> MaterialTheme.colorScheme.onSurface
-              else -> MaterialTheme.colorScheme.onSurfaceVariant
-            },
-          label = "stepper_label_color"
-        )
-
-        Column(
-          horizontalAlignment = Alignment.CenterHorizontally,
-          modifier = Modifier.width(62.dp)
+        Spacer(modifier = Modifier.width(8.dp))
+        Surface(
+          color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+          shape = RoundedCornerShape(999.dp)
         ) {
+          Text(
+            text = "%$progressPct",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+          )
+        }
+      }
+
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth()
+      ) {
+        steps.forEachIndexed { index, _ ->
+          val isCompleted = index < currentStep
+          val isCurrent = index == currentStep
+          val scale by animateFloatAsState(
+            targetValue = if (isCurrent) 1.15f else 1f,
+            animationSpec = spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMedium),
+            label = "stepper_node_scale"
+          )
+          val nodeBg by animateColorAsState(
+            targetValue =
+              when {
+                isCompleted || isCurrent -> MaterialTheme.colorScheme.primary
+                else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f)
+              },
+            label = "stepper_node_bg"
+          )
+
           Box(
             contentAlignment = Alignment.Center,
             modifier =
-              Modifier.size(32.dp)
+              Modifier.size(22.dp)
                 .scale(scale)
                 .clip(CircleShape)
                 .background(nodeBg)
                 .border(
-                  width = if (isCurrent) 2.dp else 0.dp,
+                  width = if (isCurrent) 1.8.dp else 0.dp,
                   color = if (isCurrent) MaterialTheme.colorScheme.secondary else Color.Transparent,
                   shape = CircleShape
                 )
@@ -716,44 +750,34 @@ fun SchemaStepperHeader(
                 Icons.Rounded.Check,
                 contentDescription = null,
                 tint = Color.White,
-                modifier = Modifier.size(16.dp)
+                modifier = Modifier.size(12.dp)
               )
             } else {
               Text(
                 text = "${index + 1}",
-                style = MaterialTheme.typography.labelMedium,
+                style = MaterialTheme.typography.labelSmall,
                 color = if (isCurrent) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
                 fontWeight = FontWeight.Bold
               )
             }
           }
-          Spacer(modifier = Modifier.height(4.dp))
-          Text(
-            text = meta.shortTitle,
-            style = MaterialTheme.typography.labelSmall,
-            color = labelColor,
-            fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
-            maxLines = 1,
-            softWrap = false,
-            overflow = TextOverflow.Ellipsis
-          )
-        }
 
-        if (index < steps.lastIndex) {
-          val lineColor by animateColorAsState(
-            targetValue =
-              if (index < currentStep) MaterialTheme.colorScheme.primary
-              else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
-            label = "stepper_line_color"
-          )
-          Box(
-            modifier =
-              Modifier.weight(1f)
-                .padding(bottom = 18.dp)
-                .height(3.dp)
-                .clip(CircleShape)
-                .background(lineColor)
-          )
+          if (index < steps.lastIndex) {
+            val lineColor by animateColorAsState(
+              targetValue =
+                if (index < currentStep) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.outline.copy(alpha = 0.30f),
+              label = "stepper_line_color"
+            )
+            Box(
+              modifier =
+                Modifier.weight(1f)
+                  .padding(horizontal = 3.dp)
+                  .height(3.dp)
+                  .clip(CircleShape)
+                  .background(lineColor)
+            )
+          }
         }
       }
     }

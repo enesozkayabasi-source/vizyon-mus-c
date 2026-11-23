@@ -23,8 +23,10 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -66,7 +68,10 @@ fun ListenerProfileSheet(
   onPlayActivityTrack: (MusicTrack) -> Unit,
   onCreateStoryFromTrack: (MusicTrack) -> Unit = {},
   onOpenChat: () -> Unit = {},
-  onOpenFollowLists: () -> Unit = {}
+  onOpenFollowLists: () -> Unit = {},
+  isFollowRequestPending: Boolean = false,
+  onBlockUser: () -> Unit = {},
+  onReportUser: () -> Unit = {}
 ) {
   val recentList =
     if (isSelf && selfRecentTracks.isNotEmpty()) selfRecentTracks.take(5)
@@ -216,8 +221,28 @@ fun ListenerProfileSheet(
                 )
                 StudioFollowToggleButton(
                   isFollowing = isFollowing,
+                  isPending = isFollowRequestPending,
                   onClick = onToggleFollow,
                   modifier = Modifier.weight(1f).testTag("profile_sheet_follow_btn")
+                )
+              }
+              Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth()
+              ) {
+                StudioGlassButton(
+                  text = "Şikayet Et",
+                  icon = Icons.Rounded.Flag,
+                  onClick = onReportUser,
+                  tintColor = MaterialTheme.colorScheme.secondary,
+                  modifier = Modifier.weight(1f).testTag("profile_report_user_btn")
+                )
+                StudioGlassButton(
+                  text = "Engelle",
+                  icon = Icons.Rounded.Block,
+                  onClick = onBlockUser,
+                  tintColor = MaterialTheme.colorScheme.error,
+                  modifier = Modifier.weight(1f).testTag("profile_block_user_btn")
                 )
               }
             }

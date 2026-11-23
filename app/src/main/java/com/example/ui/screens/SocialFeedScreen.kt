@@ -24,11 +24,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Clear
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Flag
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Headphones
+import androidx.compose.material.icons.rounded.MarkChatUnread
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.PersonSearch
 import androidx.compose.material.icons.rounded.Repeat
@@ -68,6 +71,7 @@ import com.example.model.PublicProfile
 import com.example.model.RecentTrackSummary
 import com.example.model.StoryCardTheme
 import com.example.model.UiState
+import com.example.model.sanitizeFirestoreId
 import com.example.ui.components.ActivityCommentsSheet
 import com.example.ui.components.CloudSignInPromptCard
 import com.example.ui.components.DirectChatsListSection
@@ -131,7 +135,12 @@ fun SocialFeedScreen(
   onArtistClick: (ArtistSummary) -> Unit,
   onOpenStudioForCloudSync: () -> Unit,
   onOpenStoryViewer: ((MusicStoryItem) -> Unit)? = null,
-  onNotifyMessage: (String) -> Unit = {}
+  onNotifyMessage: (String) -> Unit = {},
+  pendingRequestsCount: Int = 0,
+  outgoingRequestKeys: Set<String> = emptySet(),
+  onOpenRequests: () -> Unit = {},
+  onBlockUser: (userId: String, displayName: String, handle: String, photoUrl: String) -> Unit = { _, _, _, _ -> },
+  onReportUser: (targetUserId: String, targetType: String, targetId: String, displayName: String) -> Unit = { _, _, _, _ -> }
 ) {
   var selectedTab by remember { mutableStateOf(SocialFeedTab.ALL) }
   var userSearchQuery by remember { mutableStateOf("") }
@@ -162,6 +171,10 @@ fun SocialFeedScreen(
     when (target) {
       is NotificationDeepLinkTarget.OpenFeed -> {
         selectedTab = SocialFeedTab.ALL
+        onConsumeDeepLink()
+      }
+      is NotificationDeepLinkTarget.OpenRequests -> {
+        onOpenRequests()
         onConsumeDeepLink()
       }
       is NotificationDeepLinkTarget.OpenPostComments -> {
@@ -251,67 +264,81 @@ fun SocialFeedScreen(
       verticalArrangement = Arrangement.spacedBy(12.dp),
       modifier = Modifier.fillMaxSize().testTag("social_feed_screen")
     ) {
-      // Slim Instagram-style Top Header with Search Toggle, Messages & Notification Bell
+      // Slim Instagram-style Top Header with Search Toggle, Messages & Notification Bell + Requests Pill
       item {
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.SpaceBetween,
-          modifier = Modifier.fillMaxWidth()
-        ) {
-          Column(modifier = Modifier.weight(1f)) {
-            Text(
-              text = "VİZYON SOSYAL",
-              style = MaterialTheme.typography.labelSmall,
-              color = MaterialTheme.colorScheme.primary,
-              fontWeight = FontWeight.Bold
-            )
-            Text("Akış", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-          }
-          Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(
-              contentAlignment = Alignment.Center,
-              modifier =
-                Modifier.size(48.dp)
-                  .clip(CircleShape)
-                  .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
-                  .border(1.2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f), CircleShape)
-                  .clickable { selectedListenerForSheet = selfPublicProfile }
-                  .testTag("feed_profile_btn")
-            ) {
-              StudioAvatar(
-                photoUrlOrPath = userPhotoUrl,
-                contentDescription = "Profilimi Görüntüle",
-                size = 36.dp,
-                ringColor = MaterialTheme.colorScheme.primary
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Column(modifier = Modifier.weight(1f)) {
+              Text(
+                text = "VİZYON SOSYAL",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold
+              )
+              Text("Akış", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+              Box(
+                contentAlignment = Alignment.Center,
+                modifier =
+                  Modifier.size(48.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+                    .border(1.2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f), CircleShape)
+                    .clickable { selectedListenerForSheet = selfPublicProfile }
+                    .testTag("feed_profile_btn")
+              ) {
+                StudioAvatar(
+                  photoUrlOrPath = userPhotoUrl,
+                  contentDescription = "Profilimi Görüntüle",
+                  size = 36.dp,
+                  ringColor = MaterialTheme.colorScheme.primary
+                )
+              }
+              StudioCircleIconButton(
+                icon = Icons.Rounded.Search,
+                contentDescription = "Akışta Ara",
+                onClick = { showFeedSearch = !showFeedSearch },
+                size = 48.dp,
+                highlighted = showFeedSearch || userSearchQuery.isNotBlank(),
+                modifier = Modifier.testTag("feed_search_toggle_btn")
+              )
+              StudioCircleIconButton(
+                icon = Icons.Rounded.ChatBubbleOutline,
+                contentDescription = "Sohbetler",
+                onClick = { selectedTab = SocialFeedTab.CHATS },
+                size = 48.dp,
+                highlighted = selectedTab == SocialFeedTab.CHATS,
+                badgeCount = chatsList.size,
+                modifier = Modifier.testTag("feed_messages_btn")
+              )
+              StudioCircleIconButton(
+                icon = Icons.Rounded.Notifications,
+                contentDescription = "Bildirim Kutusu",
+                onClick = onOpenNotifications,
+                size = 48.dp,
+                highlighted = unreadNotificationCount > 0,
+                badgeCount = unreadNotificationCount,
+                modifier = Modifier.testTag("feed_notifications_bell_btn")
               )
             }
-            StudioCircleIconButton(
-              icon = Icons.Rounded.Search,
-              contentDescription = "Akışta Ara",
-              onClick = { showFeedSearch = !showFeedSearch },
-              size = 48.dp,
-              highlighted = showFeedSearch || userSearchQuery.isNotBlank(),
-              modifier = Modifier.testTag("feed_search_toggle_btn")
-            )
-            StudioCircleIconButton(
-              icon = Icons.Rounded.ChatBubbleOutline,
-              contentDescription = "Sohbetler",
-              onClick = { selectedTab = SocialFeedTab.CHATS },
-              size = 48.dp,
-              highlighted = selectedTab == SocialFeedTab.CHATS,
-              badgeCount = chatsList.size,
-              modifier = Modifier.testTag("feed_messages_btn")
-            )
-            StudioCircleIconButton(
-              icon = Icons.Rounded.Notifications,
-              contentDescription = "Bildirim Kutusu",
-              onClick = onOpenNotifications,
-              size = 48.dp,
-              highlighted = unreadNotificationCount > 0,
-              badgeCount = unreadNotificationCount,
-              modifier = Modifier.testTag("feed_notifications_bell_btn")
-            )
           }
+
+          StudioGlassButton(
+            text =
+              if (pendingRequestsCount > 0) "Takip & Mesaj İstekleri ($pendingRequestsCount)"
+              else "Takip & Mesaj İstekleri",
+            icon = Icons.Rounded.MarkChatUnread,
+            tintColor =
+              if (pendingRequestsCount > 0) MaterialTheme.colorScheme.secondary
+              else MaterialTheme.colorScheme.primary,
+            onClick = onOpenRequests,
+            modifier = Modifier.fillMaxWidth().testTag("feed_requests_btn")
+          )
         }
       }
 
@@ -415,9 +442,12 @@ fun SocialFeedScreen(
             } else {
               items(
                 items = filteredListeners,
-                key = { "listener_${it.userId}" },
+                key = { "listener_${it.userId.ifBlank { it.id }}" },
                 contentType = { "listener_card" }
               ) { person ->
+                val rawPeerId = person.userId.ifBlank { person.id }
+                val safePeerId = if (rawPeerId.isNotBlank()) sanitizeFirestoreId(rawPeerId) else ""
+                val isFollowPending = safePeerId.isNotBlank() && "follow_${safePeerId}::PENDING" in outgoingRequestKeys
                 Box(
                   modifier =
                     Modifier.animateItem(
@@ -428,7 +458,8 @@ fun SocialFeedScreen(
                 ) {
                   ListenerDirectoryCard(
                     person = person,
-                    isFollowing = person.userId in followingIds,
+                    isFollowing = person.userId in followingIds || safePeerId in followingIds,
+                    isFollowRequestPending = isFollowPending,
                     onOpenProfile = { selectedListenerForSheet = person },
                     onToggleFollow = { onToggleFollowListener(person) },
                     onOpenChat = { onOpenDirectChat(person) }
@@ -631,7 +662,10 @@ fun SocialFeedScreen(
 
   // Modal Sheet 3: Detailed Listener Profile Window (includes live status & Son 5 Dinlenen Şarkı)
   selectedListenerForSheet?.let { person ->
-    val isSelf = person.userId == "local" || (!currentUserId.isNullOrBlank() && person.userId == currentUserId)
+    val rawPersonId = person.userId.ifBlank { person.id }
+    val safePersonId = if (rawPersonId.isNotBlank()) sanitizeFirestoreId(rawPersonId) else ""
+    val isSelf = rawPersonId == "local" || (!currentUserId.isNullOrBlank() && rawPersonId == currentUserId)
+    val isFollowPending = !isSelf && safePersonId.isNotBlank() && "follow_${safePersonId}::PENDING" in outgoingRequestKeys
     val recentPosts =
       allFeedItems.filter {
         it.userId == person.userId ||
@@ -640,7 +674,8 @@ fun SocialFeedScreen(
     ListenerProfileSheet(
       person = person,
       isSelf = isSelf,
-      isFollowing = person.userId in followingIds,
+      isFollowing = person.userId in followingIds || safePersonId in followingIds,
+      isFollowRequestPending = isFollowPending,
       recentPosts = recentPosts,
       selfRecentTracks = selfRecentTracks,
       onDismiss = { selectedListenerForSheet = null },
@@ -656,8 +691,16 @@ fun SocialFeedScreen(
         onOpenDirectChat(person)
       },
       onOpenFollowLists = {
-        val targetUid = if (isSelf) (currentUserId ?: "local") else person.userId
+        val targetUid = if (isSelf) (currentUserId ?: "local") else rawPersonId
         onInspectFollowLists(targetUid)
+      },
+      onBlockUser = {
+        selectedListenerForSheet = null
+        onBlockUser(rawPersonId, person.displayName, person.handle, person.photoUrl)
+      },
+      onReportUser = {
+        selectedListenerForSheet = null
+        onReportUser(rawPersonId, "USER", rawPersonId, person.displayName)
       }
     )
   }
@@ -699,7 +742,15 @@ fun SocialFeedScreen(
       onDeleteStory = onDeleteStory,
       onNotifyMessage = onNotifyMessage,
       onOpenAuthorProfile = { selectedListenerForSheet = authorProfile },
-      onMessageAuthor = { onOpenDirectChat(authorProfile) }
+      onMessageAuthor = { onOpenDirectChat(authorProfile) },
+      onBlockAuthor =
+        if (!isAuthor) {
+          { onBlockUser(story.userId, story.userName, story.userHandle, story.userAvatarUrl) }
+        } else null,
+      onReportAuthor =
+        if (!isAuthor) {
+          { onReportUser(story.userId, "STORY", story.id, story.userName) }
+        } else null
     )
   }
 
@@ -784,6 +835,31 @@ fun SocialFeedScreen(
                 )
               }
             }
+          }
+        } else {
+          Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            StudioGlassButton(
+              text = "Şikayet Et",
+              icon = Icons.Rounded.Flag,
+              tintColor = MaterialTheme.colorScheme.secondary,
+              onClick = {
+                val target = post
+                activeLongPressPost = null
+                onReportUser(target.userId, "POST", target.id, target.userName)
+              },
+              modifier = Modifier.weight(1f).testTag("post_action_report_btn")
+            )
+            StudioGlassButton(
+              text = "Engelle",
+              icon = Icons.Rounded.Block,
+              tintColor = MaterialTheme.colorScheme.error,
+              onClick = {
+                val target = post
+                activeLongPressPost = null
+                onBlockUser(target.userId, target.userName, target.userHandle, target.userAvatarUrl)
+              },
+              modifier = Modifier.weight(1f).testTag("post_action_block_btn")
+            )
           }
         }
 

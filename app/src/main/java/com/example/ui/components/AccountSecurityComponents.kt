@@ -43,6 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -460,12 +461,21 @@ fun VaultUnlockDialog(
 ) {
   var passcodeInput by remember { mutableStateOf("") }
 
+  BackHandler(enabled = true) {}
+
   Box(
     contentAlignment = Alignment.Center,
     modifier =
       Modifier.fillMaxSize()
         .zIndex(30f)
         .background(Color(0xEE040710))
+        .pointerInput(Unit) {
+          awaitPointerEventScope {
+            while (true) {
+              awaitPointerEvent().changes.forEach { it.consume() }
+            }
+          }
+        }
         .padding(20.dp)
         .testTag("vault_unlock_dialog")
   ) {

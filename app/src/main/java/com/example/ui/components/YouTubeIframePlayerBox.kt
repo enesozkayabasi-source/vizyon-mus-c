@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.graphics.Color as AndroidColor
 import android.os.Handler
 import android.os.Looper
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
@@ -81,48 +82,75 @@ fun rememberSharedYouTubeWebView(
 
   val mainHandler = remember { Handler(Looper.getMainLooper()) }
 
+  val destroyedRef = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+
   val webView = remember(context) {
     val bridge =
       object {
         @JavascriptInterface
         fun onReady(vid: String) {
-          mainHandler.post { latestReady(vid) }
+          if (!destroyedRef.get()) mainHandler.post { latestReady(vid) }
         }
 
         @JavascriptInterface
         fun onStateChange(stateCode: Int) {
-          mainHandler.post { latestState(stateCode) }
+          if (!destroyedRef.get()) mainHandler.post { latestState(stateCode) }
         }
 
         @JavascriptInterface
         fun onProgress(currentSec: Double, durationSec: Double) {
-          mainHandler.post { latestProgress(currentSec, durationSec) }
+          if (!destroyedRef.get()) mainHandler.post { latestProgress(currentSec, durationSec) }
         }
 
         @JavascriptInterface
         fun onError(code: Int) {
-          mainHandler.post { latestError(code) }
+          if (!destroyedRef.get()) mainHandler.post { latestError(code) }
         }
 
         @JavascriptInterface
         fun onLoadFailure(reason: String) {
-          mainHandler.post { latestLoadFailure(reason) }
+          if (!destroyedRef.get()) mainHandler.post { latestLoadFailure(reason) }
         }
       }
 
     WebView(context).apply {
       setBackgroundColor(AndroidColor.BLACK)
+      isVerticalScrollBarEnabled = false
+      isHorizontalScrollBarEnabled = false
+      overScrollMode = View.OVER_SCROLL_NEVER
       settings.javaScriptEnabled = true
       settings.domStorageEnabled = true
       settings.mediaPlaybackRequiresUserGesture = false
       settings.javaScriptCanOpenWindowsAutomatically = true
       settings.loadsImagesAutomatically = true
-      settings.useWideViewPort = true
-      settings.loadWithOverviewMode = true
+      settings.useWideViewPort = false
+      settings.loadWithOverviewMode = false
+      settings.setSupportZoom(false)
+      settings.builtInZoomControls = false
+      settings.displayZoomControls = false
+      settings.textZoom = 100
       settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
       runCatching {
         CookieManager.getInstance().setAcceptCookie(true)
         CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+      }
+      addOnLayoutChangeListener { view, left, top, right, bottom, _, _, _, _ ->
+        val wPx = right - left
+        val hPx = bottom - top
+        if (wPx > 0 && hPx > 0) {
+          val density = view.resources.displayMetrics.density.coerceAtLeast(1f)
+          val cssW = wPx / density
+          val cssH = hPx / density
+          view.scrollTo(0, 0)
+          view.post {
+            runCatching {
+              (view as? WebView)?.evaluateJavascript(
+                "window.vizyonSyncStage && window.vizyonSyncStage(null, $cssW, $cssH);",
+                null
+              )
+            }
+          }
+        }
       }
       webChromeClient = WebChromeClient()
       webViewClient =
@@ -207,11 +235,17 @@ fun rememberSharedYouTubeWebView(
   }
 
   DisposableEffect(webView) {
+    destroyedRef.set(false)
     latestAttach(webView)
     onDispose {
+      destroyedRef.set(true)
+      mainHandler.removeCallbacksAndMessages(null)
       latestAttach(null)
       runCatching {
-        (webView.parent as? ViewGroup)?.removeView(webView)
+        (webView.parent as? ViewGroup)?.let { parent ->
+          runCatching { parent.endViewTransition(webView) }
+          parent.removeView(webView)
+        }
         webView.removeJavascriptInterface("VizyonYtBridge")
         webView.stopLoading()
         webView.loadUrl("about:blank")
@@ -278,7 +312,18 @@ fun YouTubeIframePlayerBox(
     Box(modifier = Modifier.fillMaxSize()) {
       AndroidView(
         factory = {
-          runCatching { (sharedWebView.parent as? ViewGroup)?.removeView(sharedWebView) }
+          runCatching {
+            (sharedWebView.parent as? ViewGroup)?.let { parent ->
+              runCatching { parent.endViewTransition(sharedWebView) }
+              parent.removeView(sharedWebView)
+            }
+          }
+          sharedWebView.layoutParams =
+            ViewGroup.LayoutParams(
+              ViewGroup.LayoutParams.MATCH_PARENT,
+              ViewGroup.LayoutParams.MATCH_PARENT
+            )
+          sharedWebView.scrollTo(0, 0)
           sharedWebView
         },
         update = { wv ->
@@ -292,6 +337,33 @@ fun YouTubeIframePlayerBox(
               wv.evaluateJavascript("window.vizyonLoadAndPlay && window.vizyonLoadAndPlay('$sanitized');", null)
             }
           }
+          wv.scrollTo(0, 0)
+          val density = wv.resources.displayMetrics.density.coerceAtLeast(1f)
+          val cssW = if (wv.width > 0) wv.width / density else 0f
+          val cssH = if (wv.height > 0) wv.height / density else 0f
+          val compactFlag = if (compactMode) "true" else "false"
+          val syncJs =
+            if (cssW > 4f && cssH > 4f) {
+              "window.vizyonSyncStage && window.vizyonSyncStage($compactFlag, $cssW, $cssH);"
+            } else {
+              "window.vizyonSyncStage && window.vizyonSyncStage($compactFlag);"
+            }
+          runCatching { wv.evaluateJavascript(syncJs, null) }
+          wv.postDelayed(
+            {
+              val d = wv.resources.displayMetrics.density.coerceAtLeast(1f)
+              val w2 = if (wv.width > 0) wv.width / d else 0f
+              val h2 = if (wv.height > 0) wv.height / d else 0f
+              val delayedJs =
+                if (w2 > 4f && h2 > 4f) {
+                  "window.vizyonSyncStage && window.vizyonSyncStage($compactFlag, $w2, $h2);"
+                } else {
+                  "window.vizyonSyncStage && window.vizyonSyncStage($compactFlag);"
+                }
+              runCatching { wv.evaluateJavascript(delayedJs, null) }
+            },
+            90L
+          )
         },
         modifier = Modifier.fillMaxSize()
       )
@@ -396,8 +468,11 @@ private fun buildYouTubeIframeHtml(initialVideoId: String): String =
   <html>
     <head>
       <meta charset="utf-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no">
       <style>
+        * {
+          box-sizing: border-box;
+        }
         html, body {
           margin: 0;
           padding: 0;
@@ -406,23 +481,101 @@ private fun buildYouTubeIframeHtml(initialVideoId: String): String =
           background: #000000;
           overflow: hidden;
         }
-        #player {
+        #stage {
           position: fixed;
           top: 0;
           left: 0;
           width: 100%;
           height: 100%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: #000000;
+          overflow: hidden;
+        }
+        #player-frame {
+          width: 640px;
+          height: 360px;
+          flex: 0 0 auto;
+          position: relative;
+          transform-origin: center center;
+          background: #000000;
+          overflow: hidden;
+        }
+        #player, #player iframe {
+          width: 640px !important;
+          height: 360px !important;
+          display: block;
+          border: 0;
         }
       </style>
     </head>
     <body>
-      <div id="player"></div>
+      <div id="stage">
+        <div id="player-frame">
+          <div id="player"></div>
+        </div>
+      </div>
       <script>
+        var STAGE_W = 640;
+        var STAGE_H = 360;
         var ytPlayer = null;
         var ytApiReady = false;
         var isYtReady = false;
         var currentVid = "$initialVideoId";
         var progressTimer = null;
+        var lastHintW = 0;
+        var lastHintH = 0;
+
+        function syncStageScale(isCompact, hintW, hintH) {
+          var stage = document.getElementById('stage');
+          var frame = document.getElementById('player-frame');
+          if (!stage || !frame) return;
+          if (typeof hintW === 'number' && hintW > 4) lastHintW = hintW;
+          if (typeof hintH === 'number' && hintH > 4) lastHintH = hintH;
+
+          var vw = (lastHintW > 4)
+            ? lastHintW
+            : Math.max(window.innerWidth || 0, document.documentElement.clientWidth || 0, stage.clientWidth || 0, 1);
+          var vh = (lastHintH > 4)
+            ? lastHintH
+            : Math.max(window.innerHeight || 0, document.documentElement.clientHeight || 0, stage.clientHeight || 0, 1);
+
+          stage.style.width = vw + 'px';
+          stage.style.height = vh + 'px';
+
+          var scale = Math.min(vw / STAGE_W, vh / STAGE_H);
+          if (!isFinite(scale) || scale <= 0) scale = 1;
+          frame.style.transform = 'scale(' + scale.toFixed(6) + ')';
+        }
+
+        window.vizyonSyncStage = function(isCompact, hintW, hintH) {
+          syncStageScale(isCompact, hintW, hintH);
+        };
+
+        window.addEventListener('resize', function() {
+          lastHintW = 0;
+          lastHintH = 0;
+          syncStageScale(null);
+        });
+
+        if (typeof ResizeObserver === 'function') {
+          try {
+            var ro = new ResizeObserver(function(entries) {
+              if (entries && entries.length > 0 && entries[0].contentRect) {
+                var r = entries[0].contentRect;
+                if (r.width > 4 && r.height > 4) {
+                  syncStageScale(null, r.width, r.height);
+                  return;
+                }
+              }
+              syncStageScale(null);
+            });
+            ro.observe(document.documentElement);
+          } catch (e) {}
+        }
+
+        syncStageScale(null);
 
         function startProgressLoop() {
           if (progressTimer) clearInterval(progressTimer);
@@ -452,6 +605,7 @@ private fun buildYouTubeIframeHtml(initialVideoId: String): String =
               if (typeof ytPlayer.playVideo === 'function') {
                 ytPlayer.playVideo();
               }
+              syncStageScale(null);
               return;
             } catch (e) {
               VizyonYtBridge.onLoadFailure("YouTube video yükleme hatası: " + (e.message || e));
@@ -464,8 +618,8 @@ private fun buildYouTubeIframeHtml(initialVideoId: String): String =
           }
           try {
             ytPlayer = new YT.Player('player', {
-              width: '100%',
-              height: '100%',
+              width: '640',
+              height: '360',
               videoId: currentVid,
               playerVars: {
                 autoplay: 1,
@@ -480,6 +634,7 @@ private fun buildYouTubeIframeHtml(initialVideoId: String): String =
               events: {
                 onReady: function() {
                   isYtReady = true;
+                  syncStageScale(null);
                   startProgressLoop();
                   VizyonYtBridge.onReady(currentVid);
                   if (typeof ytPlayer.playVideo === 'function') {
@@ -487,6 +642,7 @@ private fun buildYouTubeIframeHtml(initialVideoId: String): String =
                   }
                 },
                 onStateChange: function(event) {
+                  syncStageScale(null);
                   VizyonYtBridge.onStateChange(event.data);
                 },
                 onError: function(event) {
@@ -494,6 +650,7 @@ private fun buildYouTubeIframeHtml(initialVideoId: String): String =
                 }
               }
             });
+            syncStageScale(null);
           } catch (e) {
             VizyonYtBridge.onLoadFailure("YouTube IFrame başlatılamadı: " + (e.message || e));
           }
@@ -501,6 +658,7 @@ private fun buildYouTubeIframeHtml(initialVideoId: String): String =
 
         function onYouTubeIframeAPIReady() {
           ytApiReady = true;
+          syncStageScale(null);
           if (currentVid) {
             createOrLoadPlayer(currentVid);
           }

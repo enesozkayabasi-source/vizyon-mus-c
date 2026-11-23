@@ -27,6 +27,7 @@ import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.ChatBubble
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.GraphicEq
 import androidx.compose.material.icons.rounded.PersonAdd
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material3.Icon
@@ -95,16 +96,21 @@ fun InAppNotificationBubble(
             NotificationType.LIKE -> Icons.Rounded.Favorite
             NotificationType.COMMENT -> Icons.Rounded.ChatBubble
             NotificationType.REPOST -> Icons.Rounded.Repeat
-            NotificationType.FOLLOW -> Icons.Rounded.PersonAdd
+            NotificationType.FOLLOW, NotificationType.FOLLOW_REQUEST -> Icons.Rounded.PersonAdd
             NotificationType.STORY -> Icons.Rounded.AutoAwesome
-            NotificationType.MESSAGE -> Icons.Rounded.ChatBubble
+            NotificationType.VOICE_MESSAGE -> Icons.Rounded.GraphicEq
+            NotificationType.MESSAGE, NotificationType.MESSAGE_REQUEST -> Icons.Rounded.ChatBubble
           }
         val badgeColor =
           when (nType) {
             NotificationType.LIKE -> MaterialTheme.colorScheme.secondary
             NotificationType.REPOST, NotificationType.STORY -> MaterialTheme.colorScheme.tertiary
-            NotificationType.MESSAGE -> MaterialTheme.colorScheme.primary
-            NotificationType.COMMENT, NotificationType.FOLLOW -> MaterialTheme.colorScheme.primary
+            NotificationType.MESSAGE,
+            NotificationType.VOICE_MESSAGE,
+            NotificationType.MESSAGE_REQUEST -> MaterialTheme.colorScheme.secondary
+            NotificationType.COMMENT,
+            NotificationType.FOLLOW,
+            NotificationType.FOLLOW_REQUEST -> MaterialTheme.colorScheme.primary
           }
 
         Surface(

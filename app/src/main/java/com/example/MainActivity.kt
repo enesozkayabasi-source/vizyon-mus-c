@@ -34,6 +34,7 @@ import com.example.data.remote.HybridMusicRepository
 import com.example.model.AppAppearanceConfig
 import com.example.notifications.BackgroundNotificationJobService
 import com.example.notifications.VizyonNotificationHelper
+import com.example.notifications.VizyonRealtimeNotificationService
 import com.example.player.YouTubeForegroundPlayerManager
 import com.example.ui.auth.attemptAutoSignIn
 import com.example.ui.components.VizyonLaunchSplash
@@ -173,6 +174,22 @@ fun VizyonMusicAppRoot(
         }
       }
 
+      LaunchedEffect(
+        uid,
+        activeAppearance.onboardingCompleted,
+        activeAppearance.notificationsEnabled,
+        activeAppearance.backgroundNotifServiceEnabled
+      ) {
+        if (activeAppearance.onboardingCompleted) {
+          VizyonRealtimeNotificationService.syncServiceState(
+            context = context,
+            uid = uid,
+            notificationsEnabled = activeAppearance.notificationsEnabled,
+            backgroundNotifServiceEnabled = activeAppearance.backgroundNotifServiceEnabled
+          )
+        }
+      }
+
       LaunchedEffect(launchIntent, mainViewModel) {
         if (launchIntent != null) {
           mainViewModel.handleNotificationIntent(launchIntent)
@@ -206,6 +223,8 @@ fun VizyonMusicAppRoot(
               initialLanguage = activeAppearance.preferredLanguage,
               initialStoryTheme = activeAppearance.defaultStoryTheme,
               initialChatPrivacy = activeAppearance.chatPrivacy,
+              initialRequireFollowApproval = activeAppearance.requireFollowApproval,
+              initialBackgroundNotifServiceEnabled = activeAppearance.backgroundNotifServiceEnabled,
               onPickPhoto = { uri -> mainViewModel.updateProfilePhotoFromUri(context, uri) },
               onThemePreviewChange = { mainViewModel.updateThemeMode(it) },
               onAccentPreviewChange = { mainViewModel.updateAccentPalette(it) },
@@ -225,7 +244,9 @@ fun VizyonMusicAppRoot(
                 chatPrivacy,
                 passcode,
                 rememberMe,
-                lockOnLaunch ->
+                lockOnLaunch,
+                requireFollowApproval,
+                backgroundNotifServiceEnabled ->
                 mainViewModel.completeOnboarding(
                   displayName = name,
                   handle = handle,
@@ -241,7 +262,9 @@ fun VizyonMusicAppRoot(
                   chatPrivacy = chatPrivacy,
                   passcode = passcode,
                   rememberMe = rememberMe,
-                  lockOnLaunch = lockOnLaunch
+                  lockOnLaunch = lockOnLaunch,
+                  requireFollowApproval = requireFollowApproval,
+                  backgroundNotifServiceEnabled = backgroundNotifServiceEnabled
                 )
               }
             )

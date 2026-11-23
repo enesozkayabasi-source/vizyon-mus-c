@@ -7,12 +7,16 @@ import com.example.model.ActivityComment
 import com.example.model.ActivityFeedItem
 import com.example.model.ArtistFanPost
 import com.example.model.ArtistSummary
+import com.example.model.BlockedUser
 import com.example.model.ChatPrivacy
 import com.example.model.DirectChatMessage
 import com.example.model.DirectChatThread
+import com.example.model.DirectMessageType
 import com.example.model.FanPostTag
 import com.example.model.FollowConnection
+import com.example.model.FollowRequest
 import com.example.model.FollowedArtist
+import com.example.model.MessageRequest
 import com.example.model.MusicStoryItem
 import com.example.model.MusicTrack
 import com.example.model.NotificationType
@@ -20,6 +24,8 @@ import com.example.model.Playlist
 import com.example.model.PlaylistCoverStyle
 import com.example.model.PublicProfile
 import com.example.model.RecentTrackSummary
+import com.example.model.ReportReason
+import com.example.model.RequestStatus
 import com.example.model.SavedTrack
 import com.example.model.StoryCardTheme
 import com.example.model.UserNotification
@@ -122,6 +128,7 @@ class VizyonFirestoreRepository(
     bio: String = "",
     favoriteGenres: List<String> = emptyList(),
     shareActivity: Boolean = true,
+    requireFollowApproval: Boolean = false,
     chatPrivacy: ChatPrivacy = ChatPrivacy.PUBLIC,
     defaultStoryTheme: StoryCardTheme = StoryCardTheme.NEON_WAVE,
     securityPasscodeHash: String = "",
@@ -157,6 +164,7 @@ class VizyonFirestoreRepository(
             "photoUrl" to safePhoto,
             "favoriteGenres" to safeGenres,
             "shareActivity" to shareActivity,
+            "requireFollowApproval" to requireFollowApproval,
             "chatPrivacy" to chatPrivacy.name,
             "defaultStoryTheme" to defaultStoryTheme.name,
             "rememberMe" to rememberMe,
@@ -180,7 +188,8 @@ class VizyonFirestoreRepository(
       }
 
       val publicRef = db.collection("public_profiles").document(uid)
-      if (!publicRef.get().await().exists()) {
+      val publicSnap = publicRef.get().await()
+      if (!publicSnap.exists()) {
         val publicPayload =
           mapOf(
             "userId" to uid,
@@ -188,7 +197,9 @@ class VizyonFirestoreRepository(
             "handle" to safeHandle,
             "bio" to safeBio.take(160),
             "photoUrl" to safePhoto,
-            "discoverable" to shareActivity,
+            "discoverable" to true,
+            "shareActivity" to shareActivity,
+            "requireFollowApproval" to requireFollowApproval,
             "chatPrivacy" to chatPrivacy.name,
             "defaultStoryTheme" to defaultStoryTheme.name,
             "followerCount" to 0L,
@@ -197,6 +208,16 @@ class VizyonFirestoreRepository(
             "updatedAt" to FieldValue.serverTimestamp()
           )
         publicRef.set(publicPayload).await()
+      } else if (publicSnap.getBoolean("discoverable") == false) {
+        runCatching {
+          publicRef.update(
+            mapOf(
+              "discoverable" to true,
+              "shareActivity" to shareActivity,
+              "updatedAt" to FieldValue.serverTimestamp()
+            )
+          ).await()
+        }
       }
       Result.success(Unit)
     } catch (e: CancellationException) {
@@ -223,6 +244,7 @@ class VizyonFirestoreRepository(
     handle: String,
     bio: String,
     shareActivity: Boolean,
+    requireFollowApproval: Boolean? = null,
     favoriteGenres: List<String>? = null,
     photoUrl: String? = null,
     chatPrivacy: ChatPrivacy? = null,
@@ -254,6 +276,7 @@ class VizyonFirestoreRepository(
           "shareActivity" to shareActivity,
           "updatedAt" to FieldValue.serverTimestamp()
         )
+      if (requireFollowApproval != null) userUpdates["requireFollowApproval"] = requireFollowApproval
       if (favoriteGenres != null) userUpdates["favoriteGenres"] = favoriteGenres.take(8)
       val safePhoto = photoUrl?.let(::safeAvatarUrl)
       if (!safePhoto.isNullOrBlank()) userUpdates["photoUrl"] = safePhoto
@@ -279,17 +302,61 @@ class VizyonFirestoreRepository(
           "displayName" to cleanName,
           "handle" to cleanHandle,
           "bio" to cleanBio.take(160),
-          "discoverable" to shareActivity,
+          "discoverable" to true,
+          "shareActivity" to shareActivity,
           "updatedAt" to FieldValue.serverTimestamp()
         )
+      if (requireFollowApproval != null) publicUpdates["requireFollowApproval"] = requireFollowApproval
       if (!safePhoto.isNullOrBlank()) publicUpdates["photoUrl"] = safePhoto
       if (chatPrivacy != null) publicUpdates["chatPrivacy"] = chatPrivacy.name
       if (defaultStoryTheme != null) publicUpdates["defaultStoryTheme"] = defaultStoryTheme.name
+      if (!shareActivity) {
+        publicUpdates.putAll(clearedPublicTrackFields())
+      }
 
       db.collection("public_profiles").document(userId)
         .update(publicUpdates)
         .await()
 
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.UPDATE, path)
+      Result.failure(e)
+    }
+  }
+
+  private fun clearedPublicTrackFields(): Map<String, Any> =
+    mapOf(
+      "currentTrackTitle" to "",
+      "currentArtistName" to "",
+      "lastTrackId" to "",
+      "lastTrackTitle" to "",
+      "lastArtistId" to "",
+      "lastArtistName" to "",
+      "lastTrackArtworkUrl" to "",
+      "lastTrackYoutubeId" to "",
+      "lastPlayedAtMillis" to 0L,
+      "recentTracks" to emptyList<Map<String, Any>>()
+    )
+
+  suspend fun clearPublicListeningStatus(userId: String): Result<Unit> {
+    val path = "public_profiles/$userId"
+    return try {
+      val uid = requireUserId()
+      check(uid == userId)
+      val updates = clearedPublicTrackFields().toMutableMap().apply {
+        put("discoverable", true)
+        put("shareActivity", false)
+        put("updatedAt", FieldValue.serverTimestamp())
+      }
+      db.collection("public_profiles").document(userId).update(updates).await()
+      runCatching {
+        db.collection("users").document(userId).update(
+          mapOf("shareActivity" to false, "updatedAt" to FieldValue.serverTimestamp())
+        ).await()
+      }
       Result.success(Unit)
     } catch (e: CancellationException) {
       throw e
@@ -313,6 +380,12 @@ class VizyonFirestoreRepository(
       val publicUpdates = mutableMapOf<String, Any>()
       (updates["chatPrivacy"] as? String)?.let { publicUpdates["chatPrivacy"] = it }
       (updates["defaultStoryTheme"] as? String)?.let { publicUpdates["defaultStoryTheme"] = it }
+      (updates["requireFollowApproval"] as? Boolean)?.let { publicUpdates["requireFollowApproval"] = it }
+      (updates["shareActivity"] as? Boolean)?.let { share ->
+        publicUpdates["shareActivity"] = share
+        publicUpdates["discoverable"] = true
+        if (!share) publicUpdates.putAll(clearedPublicTrackFields())
+      }
       (updates["photoUrl"] as? String)?.let { safeAvatarUrl(it) }?.takeIf { it.isNotBlank() }?.let {
         publicUpdates["photoUrl"] = it
       }
@@ -390,7 +463,18 @@ class VizyonFirestoreRepository(
         pl.reference.delete().await()
       }
 
-      listOf("favorites", "following", "followers", "followed_artists", "downloads", "notifications").forEach { col ->
+      listOf(
+        "favorites",
+        "following",
+        "followers",
+        "followed_artists",
+        "downloads",
+        "notifications",
+        "blocked_users",
+        "follow_requests",
+        "message_requests",
+        "outgoing_requests"
+      ).forEach { col ->
         val snap = userDoc.collection(col).get().await()
         snap.documents.forEach { it.reference.delete().await() }
       }
@@ -586,6 +670,434 @@ class VizyonFirestoreRepository(
     }
   }
 
+  // --- Blocking & Reporting ---
+
+  fun observeBlockedUsers(userId: String): Flow<List<BlockedUser>> = flow {
+    val path = "users/$userId/blocked_users"
+    emitAll(
+      db.collection("users").document(userId).collection("blocked_users")
+        .snapshots()
+        .map { snap ->
+          snap.toObjects(BlockedUser::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+        }
+        .wrapFirestoreErrors(userId, OperationType.LIST, path)
+    )
+  }
+
+  suspend fun blockUser(
+    userId: String,
+    targetUserId: String,
+    targetName: String,
+    targetHandle: String,
+    targetAvatarUrl: String = ""
+  ): Result<Unit> {
+    val safeTarget = sanitizeFirestoreId(targetUserId)
+    val path = "users/$userId/blocked_users/$safeTarget"
+    return try {
+      val uid = requireUserId()
+      check(uid == userId && safeTarget != uid)
+      db.collection("users").document(uid).collection("blocked_users").document(safeTarget)
+        .set(
+          mapOf(
+            "blockedUserId" to safeTarget,
+            "displayName" to targetName.ifBlank { "Dinleyici" }.take(50),
+            "handle" to normalizeHandle(targetHandle, targetName),
+            "photoUrl" to safeAvatarUrl(targetAvatarUrl),
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+          )
+        )
+        .await()
+      // Clean up active request docs if any
+      runCatching { db.collection("users").document(uid).collection("follow_requests").document(safeTarget).delete().await() }
+      runCatching { db.collection("users").document(uid).collection("message_requests").document(safeTarget).delete().await() }
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.CREATE, path)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun unblockUser(userId: String, blockedUserId: String): Result<Unit> {
+    val safeTarget = sanitizeFirestoreId(blockedUserId)
+    val path = "users/$userId/blocked_users/$safeTarget"
+    return try {
+      val uid = requireUserId()
+      check(uid == userId)
+      db.collection("users").document(uid).collection("blocked_users").document(safeTarget).delete().await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.DELETE, path)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun submitUserReport(
+    reporterId: String,
+    targetUserId: String,
+    targetType: String,
+    targetId: String,
+    reason: ReportReason,
+    details: String = ""
+  ): Result<Unit> {
+    val reportId = sanitizeFirestoreId("rep_${UUID.randomUUID().toString().take(12)}")
+    val path = "user_reports/$reportId"
+    return try {
+      val uid = requireUserId()
+      check(uid == reporterId)
+      val safeTargetUser = sanitizeFirestoreId(targetUserId)
+      val safeTargetDoc = sanitizeFirestoreId(targetId.ifBlank { safeTargetUser })
+      db.collection("user_reports").document(reportId)
+        .set(
+          mapOf(
+            "reporterId" to uid,
+            "targetUserId" to safeTargetUser,
+            "targetType" to targetType.ifBlank { "USER" }.take(32),
+            "targetId" to safeTargetDoc,
+            "reason" to reason.name,
+            "details" to details.trim().take(300),
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+          )
+        )
+        .await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.CREATE, path)
+      Result.failure(e)
+    }
+  }
+
+  // --- Follow Requests & Message Requests ---
+
+  fun observeIncomingFollowRequests(userId: String): Flow<List<FollowRequest>> = flow {
+    val path = "users/$userId/follow_requests"
+    emitAll(
+      db.collection("users").document(userId).collection("follow_requests")
+        .whereEqualTo("status", RequestStatus.PENDING.name)
+        .snapshots()
+        .map { snap ->
+          snap.toObjects(FollowRequest::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            .sortedByDescending { it.createdAt?.toDate()?.time ?: 0L }
+        }
+        .wrapFirestoreErrors(userId, OperationType.LIST, path)
+    )
+  }
+
+  fun observeIncomingMessageRequests(userId: String): Flow<List<MessageRequest>> = flow {
+    val path = "users/$userId/message_requests"
+    emitAll(
+      db.collection("users").document(userId).collection("message_requests")
+        .whereEqualTo("status", RequestStatus.PENDING.name)
+        .snapshots()
+        .map { snap ->
+          snap.toObjects(MessageRequest::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            .sortedByDescending { it.createdAt?.toDate()?.time ?: 0L }
+        }
+        .wrapFirestoreErrors(userId, OperationType.LIST, path)
+    )
+  }
+
+  fun observeOutgoingRequestKeys(userId: String): Flow<Set<String>> = flow {
+    val path = "users/$userId/outgoing_requests"
+    emitAll(
+      db.collection("users").document(userId).collection("outgoing_requests")
+        .snapshots()
+        .map { snap ->
+          snap.documents.map { doc ->
+            val st = doc.getString("status") ?: RequestStatus.PENDING.name
+            "${doc.id}::$st"
+          }.toSet()
+        }
+        .wrapFirestoreErrors(userId, OperationType.LIST, path)
+    )
+  }
+
+  suspend fun fetchPendingRequestsCount(userId: String): Pair<List<FollowRequest>, List<MessageRequest>> =
+    runCatching {
+      val uid = requireUserId()
+      if (uid != userId) return emptyList<FollowRequest>() to emptyList()
+      val followReqs =
+        db.collection("users").document(userId).collection("follow_requests")
+          .whereEqualTo("status", RequestStatus.PENDING.name)
+          .get(com.google.firebase.firestore.Source.SERVER)
+          .await()
+          .toObjects(FollowRequest::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+      val msgReqs =
+        db.collection("users").document(userId).collection("message_requests")
+          .whereEqualTo("status", RequestStatus.PENDING.name)
+          .get(com.google.firebase.firestore.Source.SERVER)
+          .await()
+          .toObjects(MessageRequest::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+      followReqs to msgReqs
+    }.getOrDefault(emptyList<FollowRequest>() to emptyList())
+
+  suspend fun sendFollowRequest(
+    requesterId: String,
+    requesterName: String,
+    requesterHandle: String,
+    requesterAvatarUrl: String,
+    recipientId: String
+  ): Result<Unit> {
+    val safeRecipient = sanitizeFirestoreId(recipientId)
+    val path = "users/$safeRecipient/follow_requests/$requesterId"
+    return try {
+      val uid = requireUserId()
+      check(uid == requesterId && safeRecipient != uid)
+      val safeHandle = normalizeHandle(requesterHandle, requesterName)
+      val safeAvatar = safeAvatarUrl(requesterAvatarUrl)
+      db.collection("users").document(safeRecipient).collection("follow_requests").document(uid)
+        .set(
+          mapOf(
+            "requesterId" to uid,
+            "requesterName" to requesterName.ifBlank { "Dinleyici" }.take(50),
+            "requesterHandle" to safeHandle,
+            "requesterAvatarUrl" to safeAvatar,
+            "recipientId" to safeRecipient,
+            "status" to RequestStatus.PENDING.name,
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+          )
+        )
+        .await()
+      db.collection("users").document(uid).collection("outgoing_requests").document("follow_$safeRecipient")
+        .set(
+          mapOf(
+            "requesterId" to uid,
+            "recipientId" to safeRecipient,
+            "requestType" to "FOLLOW",
+            "status" to RequestStatus.PENDING.name,
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+          )
+        )
+        .await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.CREATE, path)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun respondToFollowRequest(
+    recipientId: String,
+    request: FollowRequest,
+    accept: Boolean,
+    recipientName: String,
+    recipientHandle: String,
+    recipientAvatarUrl: String
+  ): Result<Unit> {
+    val requesterId = sanitizeFirestoreId(request.requesterId.ifBlank { request.id })
+    val path = "users/$recipientId/follow_requests/$requesterId"
+    return try {
+      val uid = requireUserId()
+      check(uid == recipientId)
+      val reqRef = db.collection("users").document(uid).collection("follow_requests").document(requesterId)
+      if (accept) {
+        val followerRef = db.collection("users").document(uid).collection("followers").document(requesterId)
+        val requesterFollowingRef = db.collection("users").document(requesterId).collection("following").document(uid)
+        followerRef.set(
+          mapOf(
+            "targetUserId" to requesterId,
+            "displayName" to request.requesterName.ifBlank { "Dinleyici" }.take(50),
+            "handle" to normalizeHandle(request.requesterHandle, request.requesterName),
+            "photoUrl" to safeAvatarUrl(request.requesterAvatarUrl),
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+          )
+        ).await()
+        requesterFollowingRef.set(
+          mapOf(
+            "targetUserId" to uid,
+            "displayName" to recipientName.ifBlank { "Dinleyici" }.take(50),
+            "handle" to normalizeHandle(recipientHandle, recipientName),
+            "photoUrl" to safeAvatarUrl(recipientAvatarUrl),
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+          )
+        ).await()
+        runCatching {
+          val myPubRef = db.collection("public_profiles").document(uid)
+          db.runTransaction { tx ->
+            val snap = tx.get(myPubRef)
+            if (snap.exists()) {
+              val cur = snap.getLong("followerCount") ?: 0L
+              tx.update(myPubRef, mapOf("followerCount" to (cur + 1L), "updatedAt" to FieldValue.serverTimestamp()))
+            }
+          }.await()
+        }
+      }
+      reqRef.delete().await()
+      runCatching {
+        db.collection("users").document(requesterId).collection("outgoing_requests").document("follow_$uid")
+          .delete().await()
+      }
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.UPDATE, path)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun sendMessageRequest(
+    requesterId: String,
+    requesterName: String,
+    requesterHandle: String,
+    requesterAvatarUrl: String,
+    recipientId: String,
+    previewText: String,
+    messageType: DirectMessageType = DirectMessageType.TEXT,
+    audioBase64: String = "",
+    audioDurationMs: Long = 0L
+  ): Result<Unit> {
+    val safeRecipient = sanitizeFirestoreId(recipientId)
+    val path = "users/$safeRecipient/message_requests/$requesterId"
+    return try {
+      val uid = requireUserId()
+      check(uid == requesterId && safeRecipient != uid)
+      val cleanPreview =
+        previewText.trim().ifBlank {
+          if (messageType == DirectMessageType.VOICE) {
+            val sec = ((audioDurationMs + 500L) / 1000L).coerceIn(1L, 30L)
+            "🎤 Sesli mesaj isteği (0:${sec.toString().padStart(2, '0')})"
+          } else {
+            "Merhaba! Sana mesaj göndermek istiyorum."
+          }
+        }.take(240)
+      val payload =
+        mutableMapOf<String, Any>(
+          "requesterId" to uid,
+          "requesterName" to requesterName.ifBlank { "Dinleyici" }.take(50),
+          "requesterHandle" to normalizeHandle(requesterHandle, requesterName),
+          "requesterAvatarUrl" to safeAvatarUrl(requesterAvatarUrl),
+          "recipientId" to safeRecipient,
+          "previewText" to cleanPreview,
+          "messageType" to messageType.name,
+          "status" to RequestStatus.PENDING.name,
+          "createdAt" to FieldValue.serverTimestamp(),
+          "updatedAt" to FieldValue.serverTimestamp()
+        )
+      if (messageType == DirectMessageType.VOICE && audioBase64.isNotBlank()) {
+        payload["audioBase64"] = audioBase64.take(220_000)
+        payload["audioDurationMs"] = audioDurationMs.coerceIn(0L, 30_000L)
+      }
+      db.collection("users").document(safeRecipient).collection("message_requests").document(uid)
+        .set(payload)
+        .await()
+      db.collection("users").document(uid).collection("outgoing_requests").document("message_$safeRecipient")
+        .set(
+          mapOf(
+            "requesterId" to uid,
+            "recipientId" to safeRecipient,
+            "requestType" to "MESSAGE",
+            "status" to RequestStatus.PENDING.name,
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+          )
+        )
+        .await()
+      Result.success(Unit)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.CREATE, path)
+      Result.failure(e)
+    }
+  }
+
+  suspend fun respondToMessageRequest(
+    recipientId: String,
+    request: MessageRequest,
+    accept: Boolean,
+    recipientName: String,
+    recipientHandle: String,
+    recipientAvatarUrl: String
+  ): Result<String?> {
+    val requesterId = sanitizeFirestoreId(request.requesterId.ifBlank { request.id })
+    val path = "users/$recipientId/message_requests/$requesterId"
+    return try {
+      val uid = requireUserId()
+      check(uid == recipientId)
+      val reqRef = db.collection("users").document(uid).collection("message_requests").document(requesterId)
+      var createdChatId: String? = null
+      if (accept) {
+        val chatId = buildDirectChatId(uid, requesterId)
+        createdChatId = chatId
+        val chatRef = db.collection("chats").document(chatId)
+        val participants = listOf(uid, requesterId).sorted()
+        val nowMs = System.currentTimeMillis()
+        val cleanPreview = request.previewText.trim().ifBlank { "Sohbet isteği kabul edildi." }.take(600)
+        val names = mapOf(
+          uid to recipientName.ifBlank { "Dinleyici" }.take(50),
+          requesterId to request.requesterName.ifBlank { "Dinleyici" }.take(50)
+        )
+        val handles = mapOf(
+          uid to normalizeHandle(recipientHandle, recipientName),
+          requesterId to normalizeHandle(request.requesterHandle, request.requesterName)
+        )
+        val avatars = mapOf(
+          uid to safeAvatarUrl(recipientAvatarUrl),
+          requesterId to safeAvatarUrl(request.requesterAvatarUrl)
+        )
+        val chatSnap = chatRef.get().await()
+        if (!chatSnap.exists()) {
+          chatRef.set(
+            mapOf(
+              "chatId" to chatId,
+              "participantIds" to participants,
+              "participantNames" to names,
+              "participantHandles" to handles,
+              "participantAvatars" to avatars,
+              "lastMessageText" to cleanPreview,
+              "lastSenderId" to uid,
+              "lastTrackTitle" to "",
+              "lastMessageAtMillis" to nowMs,
+              "createdAt" to FieldValue.serverTimestamp(),
+              "updatedAt" to FieldValue.serverTimestamp()
+            )
+          ).await()
+        }
+        val msgId = sanitizeFirestoreId("msg_req_${UUID.randomUUID().toString().take(10)}")
+        val msgPayload =
+          mutableMapOf<String, Any>(
+            "chatId" to chatId,
+            "participantIds" to participants,
+            "senderId" to uid,
+            "senderName" to recipientName.ifBlank { "Dinleyici" }.take(50),
+            "senderHandle" to normalizeHandle(recipientHandle, recipientName),
+            "text" to "Sohbet isteği kabul edildi • \"${cleanPreview.take(120)}\"",
+            "messageType" to DirectMessageType.TEXT.name,
+            "createdAt" to FieldValue.serverTimestamp(),
+            "updatedAt" to FieldValue.serverTimestamp()
+          )
+        val safeMyAvatar = safeAvatarUrl(recipientAvatarUrl)
+        if (safeMyAvatar.isNotBlank()) msgPayload["senderAvatarUrl"] = safeMyAvatar
+        chatRef.collection("messages").document(msgId).set(msgPayload).await()
+      }
+      reqRef.delete().await()
+      runCatching {
+        db.collection("users").document(requesterId).collection("outgoing_requests").document("message_$uid")
+          .delete().await()
+      }
+      Result.success(createdChatId)
+    } catch (e: CancellationException) {
+      throw e
+    } catch (e: Exception) {
+      handleFirestoreError(e, OperationType.UPDATE, path)
+      Result.failure(e)
+    }
+  }
+
   // --- Direct Messages (1-on-1 DM Chats) ---
 
   fun observeDirectChats(userId: String): Flow<List<DirectChatThread>> = flow {
@@ -626,7 +1138,10 @@ class VizyonFirestoreRepository(
     senderAvatarUrl: String,
     peer: PublicProfile,
     text: String,
-    attachedTrack: MusicTrack? = null
+    attachedTrack: MusicTrack? = null,
+    messageType: DirectMessageType = DirectMessageType.TEXT,
+    audioBase64: String = "",
+    audioDurationMs: Long = 0L
   ): Result<String> {
     val peerId = sanitizeFirestoreId(peer.userId.ifBlank { peer.id })
     val chatId = buildDirectChatId(senderId, peerId)
@@ -635,11 +1150,25 @@ class VizyonFirestoreRepository(
     return try {
       val uid = requireUserId()
       check(uid == senderId)
+      val resolvedType =
+        when {
+          messageType == DirectMessageType.VOICE && audioBase64.isNotBlank() -> DirectMessageType.VOICE
+          attachedTrack != null -> DirectMessageType.TRACK
+          else -> DirectMessageType.TEXT
+        }
+      val voiceDurationSec = ((audioDurationMs + 500L) / 1000L).coerceIn(1L, 30L)
       val cleanText =
         text.trim().ifBlank {
-          attachedTrack?.let { "♪ ${it.title} — ${it.artistName}" } ?: ""
+          when (resolvedType) {
+            DirectMessageType.VOICE -> "🎤 Sesli mesaj (0:${voiceDurationSec.toString().padStart(2, '0')})"
+            DirectMessageType.TRACK -> attachedTrack?.let { "♪ ${it.title} — ${it.artistName}" } ?: ""
+            DirectMessageType.TEXT -> ""
+          }
         }.take(600)
       require(cleanText.isNotEmpty()) { "Mesaj boş olamaz." }
+      if (resolvedType == DirectMessageType.VOICE) {
+        require(audioBase64.length <= 220_000) { "Sesli mesaj boyutu çok büyük (maks 30 sn)." }
+      }
 
       val participants = listOf(uid, peerId).sorted()
       val safeSenderHandle = normalizeHandle(senderHandle, senderName)
@@ -697,10 +1226,15 @@ class VizyonFirestoreRepository(
           "senderName" to senderName.ifBlank { "Dinleyici" }.take(50),
           "senderHandle" to safeSenderHandle,
           "text" to cleanText,
+          "messageType" to resolvedType.name,
           "createdAt" to FieldValue.serverTimestamp(),
           "updatedAt" to FieldValue.serverTimestamp()
         )
       if (safeSenderAvatar.isNotBlank()) msgPayload["senderAvatarUrl"] = safeSenderAvatar
+      if (resolvedType == DirectMessageType.VOICE) {
+        msgPayload["audioBase64"] = audioBase64.take(220_000)
+        msgPayload["audioDurationMs"] = audioDurationMs.coerceIn(0L, 30_000L)
+      }
       if (attachedTrack != null) {
         msgPayload["trackId"] = sanitizeFirestoreId(attachedTrack.trackId).take(128)
         msgPayload["trackTitle"] = attachedTrack.title.take(160)
@@ -1475,16 +2009,25 @@ class VizyonFirestoreRepository(
     )
   }
 
-  suspend fun fetchLatestNotificationsOnce(userId: String): List<UserNotification> =
+  suspend fun fetchLatestNotificationsOnce(
+    userId: String,
+    fromServerOnly: Boolean = false
+  ): List<UserNotification> =
     runCatching {
       val uid = requireUserId()
       if (uid != userId) return emptyList()
-      db.collection("users").document(userId).collection("notifications")
-        .orderBy("createdAt", Query.Direction.DESCENDING)
-        .limit(30)
-        .get()
-        .await()
-        .toObjects(UserNotification::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+      val query =
+        db.collection("users").document(userId).collection("notifications")
+          .orderBy("createdAt", Query.Direction.DESCENDING)
+          .limit(30)
+      val snap =
+        if (fromServerOnly) {
+          runCatching { query.get(com.google.firebase.firestore.Source.SERVER).await() }
+            .getOrElse { query.get().await() }
+        } else {
+          query.get().await()
+        }
+      snap.toObjects(UserNotification::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
     }.getOrDefault(emptyList())
 
   suspend fun sendNotification(

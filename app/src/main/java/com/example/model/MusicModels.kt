@@ -200,6 +200,7 @@ data class UserProfile(
   val photoUrl: String = "",
   val favoriteGenres: List<String> = emptyList(),
   val shareActivity: Boolean = true,
+  val requireFollowApproval: Boolean = false,
   val chatPrivacy: String = ChatPrivacy.PUBLIC.name,
   val defaultStoryTheme: String = StoryCardTheme.NEON_WAVE.name,
   val securityPasscodeHash: String = "",
@@ -226,6 +227,8 @@ data class PublicProfile(
   val bio: String = "",
   val photoUrl: String = "",
   val discoverable: Boolean = true,
+  val shareActivity: Boolean = true,
+  val requireFollowApproval: Boolean = false,
   val chatPrivacy: String = ChatPrivacy.PUBLIC.name,
   val defaultStoryTheme: String = StoryCardTheme.NEON_WAVE.name,
   val currentTrackTitle: String = "",
@@ -244,6 +247,7 @@ data class PublicProfile(
   @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
   fun toLastListenedTrack(): MusicTrack? {
+    if (!shareActivity) return null
     val resolvedTitle = lastTrackTitle.ifBlank { currentTrackTitle }.trim()
     if (resolvedTitle.isBlank()) return recentTracks.firstOrNull()?.toMusicTrack()
     val resolvedArtist = lastArtistName.ifBlank { currentArtistName }.ifBlank { "Sanatçı" }
@@ -268,6 +272,7 @@ data class PublicProfile(
   }
 
   fun resolvedRecentTracks(): List<RecentTrackSummary> {
+    if (!shareActivity) return emptyList()
     if (recentTracks.isNotEmpty()) {
       return recentTracks
         .filter { it.title.isNotBlank() }
@@ -320,6 +325,17 @@ data class DirectChatThread(
     participantAvatars[peerIdFor(myUid)].orEmpty()
 }
 
+enum class DirectMessageType {
+  TEXT,
+  TRACK,
+  VOICE;
+
+  companion object {
+    fun fromRaw(raw: String?): DirectMessageType =
+      entries.firstOrNull { it.name.equals(raw, ignoreCase = true) } ?: TEXT
+  }
+}
+
 @Keep
 @IgnoreExtraProperties
 data class DirectChatMessage(
@@ -331,6 +347,9 @@ data class DirectChatMessage(
   val senderAvatarUrl: String = "",
   val participantIds: List<String> = emptyList(),
   val text: String = "",
+  val messageType: String = DirectMessageType.TEXT.name,
+  val audioBase64: String = "",
+  val audioDurationMs: Long = 0L,
   val trackId: String = "",
   val trackTitle: String = "",
   val artistName: String = "",
@@ -340,6 +359,9 @@ data class DirectChatMessage(
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null
 ) {
+  val isVoiceMessage: Boolean
+    get() = DirectMessageType.fromRaw(messageType) == DirectMessageType.VOICE && audioBase64.isNotBlank()
+
   fun toAttachedTrack(): MusicTrack? {
     if (trackTitle.isBlank()) return null
     return MusicTrack(
@@ -528,13 +550,98 @@ enum class NotificationType(val label: String) {
   COMMENT("Yeni Yorum"),
   REPOST("Yeniden Paylaşım"),
   STORY("Yeni Hikaye"),
-  MESSAGE("Yeni Mesaj");
+  MESSAGE("Yeni Mesaj"),
+  FOLLOW_REQUEST("Takip İsteği"),
+  MESSAGE_REQUEST("Mesaj İsteği"),
+  VOICE_MESSAGE("Sesli Mesaj");
 
   companion object {
     fun fromRaw(raw: String?): NotificationType =
       entries.firstOrNull { it.name.equals(raw, ignoreCase = true) } ?: FOLLOW
   }
 }
+
+enum class RequestStatus {
+  PENDING,
+  ACCEPTED,
+  REJECTED;
+
+  companion object {
+    fun fromRaw(raw: String?): RequestStatus =
+      entries.firstOrNull { it.name.equals(raw, ignoreCase = true) } ?: PENDING
+  }
+}
+
+enum class ReportReason(val label: String) {
+  SPAM("Spam veya Reklam"),
+  HARASSMENT("Taciz veya Zorbalık"),
+  INAPPROPRIATE("Uygunsuz İçerik"),
+  IMPERSONATION("Taklit veya Sahte Hesap"),
+  OTHER("Diğer");
+
+  companion object {
+    fun fromRaw(raw: String?): ReportReason =
+      entries.firstOrNull { it.name.equals(raw, ignoreCase = true) } ?: OTHER
+  }
+}
+
+@Keep
+@IgnoreExtraProperties
+data class BlockedUser(
+  @DocumentId val id: String = "",
+  val blockedUserId: String = "",
+  val displayName: String = "",
+  val handle: String = "",
+  val photoUrl: String = "",
+  @ServerTimestamp val createdAt: Timestamp? = null,
+  @ServerTimestamp val updatedAt: Timestamp? = null
+)
+
+@Keep
+@IgnoreExtraProperties
+data class UserReport(
+  @DocumentId val id: String = "",
+  val reporterId: String = "",
+  val targetUserId: String = "",
+  val targetType: String = "USER",
+  val targetId: String = "",
+  val reason: String = ReportReason.INAPPROPRIATE.name,
+  val details: String = "",
+  @ServerTimestamp val createdAt: Timestamp? = null,
+  @ServerTimestamp val updatedAt: Timestamp? = null
+)
+
+@Keep
+@IgnoreExtraProperties
+data class FollowRequest(
+  @DocumentId val id: String = "",
+  val requesterId: String = "",
+  val requesterName: String = "",
+  val requesterHandle: String = "",
+  val requesterAvatarUrl: String = "",
+  val recipientId: String = "",
+  val status: String = RequestStatus.PENDING.name,
+  @ServerTimestamp val createdAt: Timestamp? = null,
+  @ServerTimestamp val updatedAt: Timestamp? = null
+)
+
+@Keep
+@IgnoreExtraProperties
+data class MessageRequest(
+  @DocumentId val id: String = "",
+  val requesterId: String = "",
+  val requesterName: String = "",
+  val requesterHandle: String = "",
+  val requesterAvatarUrl: String = "",
+  val recipientId: String = "",
+  val previewText: String = "",
+  val messageType: String = DirectMessageType.TEXT.name,
+  val audioBase64: String = "",
+  val audioDurationMs: Long = 0L,
+  val status: String = RequestStatus.PENDING.name,
+  @ServerTimestamp val createdAt: Timestamp? = null,
+  @ServerTimestamp val updatedAt: Timestamp? = null
+)
 
 @Keep
 @IgnoreExtraProperties

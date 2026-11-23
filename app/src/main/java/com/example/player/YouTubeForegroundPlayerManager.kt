@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import java.lang.ref.WeakReference
 import java.util.Locale
 
 enum class RepeatMode {
@@ -38,12 +39,14 @@ class YouTubeForegroundPlayerManager {
   private val _state = MutableStateFlow(PlaybackUiState())
   val state: StateFlow<PlaybackUiState> = _state.asStateFlow()
 
-  private var attachedWebView: WebView? = null
+  private var attachedWebViewRef: WeakReference<WebView>? = null
+  private val attachedWebView: WebView?
+    get() = attachedWebViewRef?.get()
   private var onTrackStartedCallback: ((MusicTrack) -> Unit)? = null
   private var onRequestTrackPlay: ((MusicTrack, List<MusicTrack>) -> Unit)? = null
 
   fun attachWebView(webView: WebView?) {
-    attachedWebView = webView
+    attachedWebViewRef = webView?.let { WeakReference(it) }
     if (webView == null) {
       _state.update { it.copy(isPlayerReady = false) }
     }
@@ -202,11 +205,11 @@ class YouTubeForegroundPlayerManager {
     if (cur.queue.isEmpty()) return
     val nextIdx =
       if (cur.shuffleEnabled && cur.queue.size > 1) {
-        cur.queue.indices.filter { it != cur.currentIndex }.random()
+        cur.queue.indices.filter { it != cur.currentIndex }.randomOrNull() ?: 0
       } else {
         (cur.currentIndex + 1) % cur.queue.size
       }
-    val nextTrack = cur.queue[nextIdx]
+    val nextTrack = cur.queue.getOrNull(nextIdx) ?: return
     onRequestTrackPlay?.invoke(nextTrack, cur.queue)
   }
 
@@ -218,7 +221,7 @@ class YouTubeForegroundPlayerManager {
       return
     }
     val prevIdx = if (cur.currentIndex - 1 < 0) cur.queue.lastIndex else cur.currentIndex - 1
-    val prevTrack = cur.queue[prevIdx]
+    val prevTrack = cur.queue.getOrNull(prevIdx) ?: return
     onRequestTrackPlay?.invoke(prevTrack, cur.queue)
   }
 
@@ -277,7 +280,7 @@ class YouTubeForegroundPlayerManager {
 
   fun resetAllForAccountDeletion() {
     evaluateJs("window.vizyonPause && window.vizyonPause();")
-    attachedWebView = null
+    attachedWebViewRef = null
     _state.value = PlaybackUiState()
   }
 
@@ -296,8 +299,8 @@ class YouTubeForegroundPlayerManager {
         }
       }
       RepeatMode.NONE -> {
-        if (cur.currentIndex + 1 < cur.queue.size) {
-          val nextTrack = cur.queue[cur.currentIndex + 1]
+        val nextTrack = cur.queue.getOrNull(cur.currentIndex + 1)
+        if (nextTrack != null) {
           onRequestTrackPlay?.invoke(nextTrack, cur.queue)
         } else {
           _state.update { it.copy(isPlaying = false, positionMs = it.durationMs) }

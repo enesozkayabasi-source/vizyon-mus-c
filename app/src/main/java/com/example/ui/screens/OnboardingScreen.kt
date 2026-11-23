@@ -9,6 +9,8 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
@@ -27,6 +29,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -54,6 +57,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -69,9 +73,9 @@ import com.example.model.MusicCategory
 import com.example.model.StoryCardTheme
 import com.example.notifications.VizyonNotificationHelper
 import com.example.ui.auth.onGoogleSignInClicked
-import com.example.ui.components.AnimatedWaveformBackdrop
+import com.example.ui.components.AnimatedStageConcertBackdrop
 import com.example.ui.components.OnboardingStepMeta
-import com.example.ui.components.SchemaStepperHeader
+import com.example.ui.components.VinylEqualizerProgressHeader
 import java.util.Locale
 
 @Composable
@@ -85,6 +89,8 @@ fun OnboardingScreen(
   initialLanguage: AppLanguage,
   initialStoryTheme: StoryCardTheme = StoryCardTheme.NEON_WAVE,
   initialChatPrivacy: ChatPrivacy = ChatPrivacy.PUBLIC,
+  initialRequireFollowApproval: Boolean = false,
+  initialBackgroundNotifServiceEnabled: Boolean = true,
   onPickPhoto: (Uri) -> Unit = {},
   onThemePreviewChange: (AppThemeMode) -> Unit,
   onAccentPreviewChange: (AccentPalette) -> Unit = {},
@@ -104,7 +110,9 @@ fun OnboardingScreen(
     chatPrivacy: ChatPrivacy,
     passcode: String,
     rememberMe: Boolean,
-    lockOnLaunch: Boolean
+    lockOnLaunch: Boolean,
+    requireFollowApproval: Boolean,
+    backgroundNotifServiceEnabled: Boolean
   ) -> Unit
 ) {
   val context = LocalContext.current
@@ -132,6 +140,12 @@ fun OnboardingScreen(
   var selectedChatPrivacy by remember(initialChatPrivacy) { mutableStateOf(initialChatPrivacy) }
   var selectedLanguage by remember(initialLanguage) { mutableStateOf(initialLanguage) }
   var ageVerified by remember { mutableStateOf(false) }
+  var requireFollowApproval by remember(initialRequireFollowApproval) {
+    mutableStateOf(initialRequireFollowApproval)
+  }
+  var backgroundNotifServiceEnabled by remember(initialBackgroundNotifServiceEnabled) {
+    mutableStateOf(initialBackgroundNotifServiceEnabled)
+  }
   val selectedGenres = remember {
     mutableStateListOf(
       MusicCategory.TURKISH_POP.label,
@@ -175,10 +189,14 @@ fun OnboardingScreen(
 
   val steps = remember {
     listOf(
-      OnboardingStepMeta("Kimlik", "Profil & Bulut Kurtarma"),
-      OnboardingStepMeta("Tema & Stil", "Görünüm, Hikaye & DM"),
-      OnboardingStepMeta("Tarzlar", "Dil & Müzik Türleri"),
-      OnboardingStepMeta("Güvenlik", "Kasa, İzinler & Özet")
+      OnboardingStepMeta("Başlangıç", "Hoş Geldin & Bulut Kurtarma"),
+      OnboardingStepMeta("Kimlik", "Ad, Kullanıcı Adı & Fotoğraf"),
+      OnboardingStepMeta("Tema", "Görünüm, Renk & Kart Stili"),
+      OnboardingStepMeta("Gizlilik", "Hikaye, DM & Takip Onayı"),
+      OnboardingStepMeta("Tarzlar", "Dil & Müzik Seçkisi"),
+      OnboardingStepMeta("Kasa", "Güvenlik Kasası & Şifre"),
+      OnboardingStepMeta("İzinler", "13+ Onay, Bildirim & Bulut"),
+      OnboardingStepMeta("Özet", "Son Kontrol & Başla")
     )
   }
   val selectableGenres = remember {
@@ -209,103 +227,99 @@ fun OnboardingScreen(
     contentColor = MaterialTheme.colorScheme.onBackground,
     modifier = Modifier.fillMaxSize().testTag("onboarding_screen")
   ) {
-    Box(modifier = Modifier.fillMaxSize()) {
-      AnimatedWaveformBackdrop(
+    Box(
+      contentAlignment = Alignment.TopCenter,
+      modifier = Modifier.fillMaxSize()
+    ) {
+      AnimatedStageConcertBackdrop(
         currentStep = currentStep,
         selectedGenreCount = selectedGenres.size
       )
 
       Column(
         modifier =
-          Modifier.fillMaxSize()
+          Modifier.widthIn(max = 600.dp)
+            .fillMaxSize()
             .statusBarsPadding()
             .navigationBarsPadding()
             .padding(horizontal = 20.dp, vertical = 12.dp)
       ) {
         Row(
           verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.SpaceBetween,
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
           modifier = Modifier.fillMaxWidth()
         ) {
           if (currentStep > 0) {
-            IconButton(
-              onClick = {
-                validationError = null
-                currentStep -= 1
-              }
+            Surface(
+              color = MaterialTheme.colorScheme.surface.copy(alpha = 0.55f),
+              shape = RoundedCornerShape(999.dp),
+              modifier =
+                Modifier.size(48.dp)
+                  .border(
+                    1.dp,
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.35f),
+                    RoundedCornerShape(999.dp)
+                  )
             ) {
-              Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "Önceki adım")
+              IconButton(
+                onClick = {
+                  validationError = null
+                  currentStep -= 1
+                },
+                modifier = Modifier.fillMaxSize()
+              ) {
+                Icon(
+                  imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
+                  contentDescription = "Önceki adım",
+                  tint = MaterialTheme.colorScheme.onSurface
+                )
+              }
             }
-          } else {
-            Spacer(modifier = Modifier.size(48.dp))
           }
 
-          Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-              text = "VİZYON STUDIO KURULUM",
-              style = MaterialTheme.typography.labelSmall,
-              color = MaterialTheme.colorScheme.primary,
-              fontWeight = FontWeight.Bold
-            )
-            Text(
-              text = "${steps[currentStep].headerTitle} • ${currentStep + 1}/${steps.size}",
-              style = MaterialTheme.typography.titleSmall,
-              fontWeight = FontWeight.SemiBold
-            )
-          }
-
-          Surface(
-            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-            shape = RoundedCornerShape(999.dp),
-            modifier =
-              Modifier.border(
-                1.dp,
-                MaterialTheme.colorScheme.primary.copy(alpha = 0.30f),
-                RoundedCornerShape(999.dp)
-              )
-          ) {
-            Text(
-              text = selectedLanguage.badge,
-              style = MaterialTheme.typography.labelSmall,
-              color = MaterialTheme.colorScheme.primary,
-              fontWeight = FontWeight.Bold,
-              modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+          Box(modifier = Modifier.weight(1f)) {
+            VinylEqualizerProgressHeader(
+              steps = steps,
+              currentStep = currentStep,
+              languageBadge = selectedLanguage.badge
             )
           }
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
-        SchemaStepperHeader(
-          steps = steps,
-          currentStep = currentStep
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Box(modifier = Modifier.weight(1f).verticalScroll(stepScrollState)) {
+        Box(modifier = Modifier.weight(1f).fillMaxWidth().verticalScroll(stepScrollState)) {
           AnimatedContent(
             targetState = currentStep,
             transitionSpec = {
               val forward = targetState >= initialState
-              (slideInHorizontally(tween(260)) { if (forward) it / 4 else -it / 4 } +
-                fadeIn(tween(240))) togetherWith
-                (slideOutHorizontally(tween(200)) { if (forward) -it / 5 else it / 5 } +
-                  fadeOut(tween(180)))
+              (scaleIn(initialScale = 0.96f, animationSpec = tween(240)) +
+                slideInHorizontally(tween(240)) { if (forward) it / 4 else -it / 4 } +
+                fadeIn(tween(220))) togetherWith
+                (scaleOut(targetScale = 1.03f, animationSpec = tween(180)) +
+                  slideOutHorizontally(tween(180)) { if (forward) -it / 5 else it / 5 } +
+                  fadeOut(tween(160)))
             },
             label = "onboarding_step"
           ) { step ->
             when (step) {
               0 -> {
-                OnboardingStepOneIdentity(
+                OnboardingStep1WelcomeAndRestore(
+                  selectedCorner = selectedCorner,
+                  isSignedInWithGoogle = isSignedInWithGoogle,
+                  googleConnecting = googleConnecting,
+                  googleAuthError = googleAuthError,
+                  onRestoreFromGoogleClick = triggerGoogleAuth
+                )
+              }
+
+              1 -> {
+                OnboardingStep2IdentityAndAvatar(
                   displayName = displayName,
                   handle = handle,
                   bio = bio,
                   avatarPath = previewAvatarPath,
                   selectedCorner = selectedCorner,
-                  isSignedInWithGoogle = isSignedInWithGoogle,
-                  googleConnecting = googleConnecting,
-                  googleAuthError = googleAuthError,
                   onPickPhotoClick = {
                     photoPickerLauncher.launch(
                       PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
@@ -319,13 +333,12 @@ fun OnboardingScreen(
                     handle = it
                     validationError = null
                   },
-                  onBioChange = { bio = it },
-                  onRestoreFromGoogleClick = triggerGoogleAuth
+                  onBioChange = { bio = it }
                 )
               }
 
-              1 -> {
-                OnboardingStepTwoThemeAndStyle(
+              2 -> {
+                OnboardingStep3ThemeAndVisuals(
                   displayName = displayName,
                   handle = handle,
                   bio = bio,
@@ -352,15 +365,26 @@ fun OnboardingScreen(
                   onSelectCorner = { corner ->
                     selectedCorner = corner
                     onCornerPreviewChange(corner)
-                  },
-                  onSelectStoryTheme = { selectedStoryTheme = it },
-                  onSelectChatPrivacy = { selectedChatPrivacy = it },
-                  onShareActivityChange = { shareActivity = it }
+                  }
                 )
               }
 
-              2 -> {
-                OnboardingStepThreeLanguageAndGenres(
+              3 -> {
+                OnboardingStep4StoryAndPrivacy(
+                  selectedCorner = selectedCorner,
+                  selectedStoryTheme = selectedStoryTheme,
+                  selectedChatPrivacy = selectedChatPrivacy,
+                  shareActivity = shareActivity,
+                  requireFollowApproval = requireFollowApproval,
+                  onSelectStoryTheme = { selectedStoryTheme = it },
+                  onSelectChatPrivacy = { selectedChatPrivacy = it },
+                  onShareActivityChange = { shareActivity = it },
+                  onRequireFollowApprovalChange = { requireFollowApproval = it }
+                )
+              }
+
+              4 -> {
+                OnboardingStep5LanguageAndGenres(
                   selectedLanguage = selectedLanguage,
                   selectableGenres = selectableGenres,
                   selectedGenres = selectedGenres,
@@ -375,26 +399,12 @@ fun OnboardingScreen(
                 )
               }
 
-              else -> {
-                OnboardingStepFourSecurityAndSummary(
-                  displayName = displayName,
-                  handle = handle,
-                  selectedTheme = selectedTheme,
-                  selectedAccent = selectedAccent,
-                  selectedStoryTheme = selectedStoryTheme,
-                  selectedChatPrivacy = selectedChatPrivacy,
-                  selectedLanguage = selectedLanguage,
-                  selectedGenres = selectedGenres,
+              5 -> {
+                OnboardingStep6SecurityVault(
                   passcode = passcode,
                   passcodeConfirm = passcodeConfirm,
                   rememberMe = rememberMe,
                   lockOnLaunch = lockOnLaunch,
-                  isNetworkAvailable = isNetworkAvailable,
-                  ageVerified = ageVerified,
-                  hasNotifPermission = hasNotifPermission,
-                  isSignedInWithGoogle = isSignedInWithGoogle,
-                  googleConnecting = googleConnecting,
-                  googleAuthError = googleAuthError,
                   onPasscodeChange = {
                     passcode = it
                     validationError = null
@@ -404,7 +414,19 @@ fun OnboardingScreen(
                     validationError = null
                   },
                   onRememberMeChange = { rememberMe = it },
-                  onLockOnLaunchChange = { lockOnLaunch = it },
+                  onLockOnLaunchChange = { lockOnLaunch = it }
+                )
+              }
+
+              6 -> {
+                OnboardingStep7SafetyNotificationsAndCloud(
+                  isNetworkAvailable = isNetworkAvailable,
+                  ageVerified = ageVerified,
+                  hasNotifPermission = hasNotifPermission,
+                  backgroundNotifServiceEnabled = backgroundNotifServiceEnabled,
+                  isSignedInWithGoogle = isSignedInWithGoogle,
+                  googleConnecting = googleConnecting,
+                  googleAuthError = googleAuthError,
                   onVerifyNetwork = { isNetworkAvailable = checkActiveNetwork(context) },
                   onAgeVerifiedChange = {
                     ageVerified = it
@@ -417,7 +439,30 @@ fun OnboardingScreen(
                       hasNotifPermission = true
                     }
                   },
+                  onBackgroundNotifServiceChange = { backgroundNotifServiceEnabled = it },
                   onGoogleAuthClick = triggerGoogleAuth
+                )
+              }
+
+              else -> {
+                OnboardingStep8FinalSummary(
+                  displayName = displayName,
+                  handle = handle,
+                  bio = bio,
+                  avatarPath = previewAvatarPath,
+                  selectedTheme = selectedTheme,
+                  selectedAccent = selectedAccent,
+                  selectedCorner = selectedCorner,
+                  selectedStoryTheme = selectedStoryTheme,
+                  selectedChatPrivacy = selectedChatPrivacy,
+                  selectedLanguage = selectedLanguage,
+                  selectedGenres = selectedGenres,
+                  passcodeConfigured = passcode.trim().length >= 4 && passcode == passcodeConfirm,
+                  ageVerified = ageVerified,
+                  shareActivity = shareActivity,
+                  requireFollowApproval = requireFollowApproval,
+                  backgroundNotifServiceEnabled = backgroundNotifServiceEnabled,
+                  isSignedInWithGoogle = isSignedInWithGoogle
                 )
               }
             }
@@ -461,11 +506,21 @@ fun OnboardingScreen(
         Spacer(modifier = Modifier.height(10.dp))
 
         Surface(
-          color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+          color = MaterialTheme.colorScheme.surface.copy(alpha = 0.80f),
           shape = RoundedCornerShape(999.dp),
           modifier =
             Modifier.fillMaxWidth()
-              .border(1.dp, Color.White.copy(alpha = 0.12f), RoundedCornerShape(999.dp))
+              .border(
+                1.2.dp,
+                Brush.horizontalGradient(
+                  listOf(
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.65f),
+                    MaterialTheme.colorScheme.secondary.copy(alpha = 0.50f),
+                    MaterialTheme.colorScheme.tertiary.copy(alpha = 0.45f)
+                  )
+                ),
+                RoundedCornerShape(999.dp)
+              )
         ) {
           Row(
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -489,20 +544,42 @@ fun OnboardingScreen(
             if (currentStep < steps.lastIndex) {
               Button(
                 onClick = {
-                  if (currentStep == 0) {
-                    val cleanName = displayName.trim()
-                    val cleanHandle = handle.trim()
-                    if (cleanName.length < 2) {
-                      validationError = "Lütfen en az 2 karakterli bir görünen ad girin."
-                      return@Button
+                  when (currentStep) {
+                    1 -> {
+                      val cleanName = displayName.trim()
+                      val cleanHandle = handle.trim()
+                      if (cleanName.length < 2) {
+                        validationError = "Lütfen en az 2 karakterli bir görünen ad girin."
+                        return@Button
+                      }
+                      if (cleanHandle.length < 2) {
+                        validationError = "Lütfen en az 2 karakterli bir kullanıcı adı (@) girin."
+                        return@Button
+                      }
                     }
-                    if (cleanHandle.length < 2) {
-                      validationError = "Lütfen en az 2 karakterli bir kullanıcı adı (@) girin."
-                      return@Button
+                    4 -> {
+                      if (selectedGenres.isEmpty()) {
+                        validationError = "Lütfen en az 1 müzik tarzı seçin."
+                        return@Button
+                      }
                     }
-                  } else if (currentStep == 2 && selectedGenres.isEmpty()) {
-                    validationError = "Lütfen en az 1 müzik tarzı seçin."
-                    return@Button
+                    5 -> {
+                      val cleanPass = passcode.trim()
+                      if (cleanPass.length < 4) {
+                        validationError = "Lütfen en az 4 karakterli bir stüdyo güvenlik şifresi oluşturun."
+                        return@Button
+                      }
+                      if (passcode != passcodeConfirm) {
+                        validationError = "Girilen şifreler birbiriyle eşleşmiyor."
+                        return@Button
+                      }
+                    }
+                    6 -> {
+                      if (!ageVerified) {
+                        validationError = "Devam etmek için 13+ yaş güvenlik doğrulamasını onaylamalısınız."
+                        return@Button
+                      }
+                    }
                   }
                   validationError = null
                   currentStep += 1
@@ -516,7 +593,7 @@ fun OnboardingScreen(
                 modifier = Modifier.heightIn(min = 48.dp).testTag("onboarding_next_btn")
               ) {
                 Text(
-                  text = "Devam Et",
+                  text = if (currentStep == 0) "Kuruluma Başla" else "Devam Et",
                   fontWeight = FontWeight.SemiBold
                 )
                 Spacer(modifier = Modifier.width(6.dp))
@@ -529,17 +606,20 @@ fun OnboardingScreen(
             } else {
               Button(
                 onClick = {
-                  val cleanPass = passcode.trim()
-                  if (cleanPass.length < 4) {
-                    validationError = "Lütfen en az 4 karakterli bir stüdyo güvenlik şifresi oluşturun."
+                  if (displayName.trim().length < 2 || handle.trim().length < 2) {
+                    validationError = "Ad ve kullanıcı adı eksik."
+                    currentStep = 1
                     return@Button
                   }
-                  if (passcode != passcodeConfirm) {
-                    validationError = "Girilen şifreler birbiriyle eşleşmiyor."
+                  val cleanPass = passcode.trim()
+                  if (cleanPass.length < 4 || passcode != passcodeConfirm) {
+                    validationError = "Lütfen geçerli bir stüdyo güvenlik şifresi doğrulayın."
+                    currentStep = 5
                     return@Button
                   }
                   if (!ageVerified) {
                     validationError = "Devam etmek için 13+ yaş güvenlik doğrulamasını onaylamalısınız."
+                    currentStep = 6
                     return@Button
                   }
                   onCompleteOnboarding(
@@ -557,7 +637,9 @@ fun OnboardingScreen(
                     selectedChatPrivacy,
                     passcode,
                     rememberMe,
-                    lockOnLaunch
+                    lockOnLaunch,
+                    requireFollowApproval,
+                    backgroundNotifServiceEnabled
                   )
                 },
                 shape = RoundedCornerShape(999.dp),

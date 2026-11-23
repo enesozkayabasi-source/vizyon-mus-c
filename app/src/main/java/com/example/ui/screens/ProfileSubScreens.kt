@@ -31,6 +31,7 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.AddAPhoto
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.CloudDone
@@ -38,9 +39,11 @@ import androidx.compose.material.icons.rounded.CloudSync
 import androidx.compose.material.icons.rounded.CloudUpload
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Person
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.VerifiedUser
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -68,6 +71,7 @@ import com.example.model.ApiBridgeStatus
 import com.example.model.AppAppearanceConfig
 import com.example.model.AppLanguage
 import com.example.model.AppThemeMode
+import com.example.model.BlockedUser
 import com.example.model.ChatPrivacy
 import com.example.model.CornerDensity
 import com.example.model.StoryCardTheme
@@ -275,10 +279,15 @@ internal fun ProfileAboutPrivacySubScreen(
   appearance: AppAppearanceConfig,
   unreadNotificationCount: Int,
   bridgeStatus: ApiBridgeStatus?,
+  blockedUsers: List<BlockedUser> = emptyList(),
   onBack: () -> Unit,
   onChatPrivacyChange: (ChatPrivacy) -> Unit,
+  onRequireFollowApprovalToggle: (Boolean) -> Unit = {},
   onNotificationsToggle: (Boolean) -> Unit,
+  onBackgroundNotifServiceToggle: (Boolean) -> Unit = {},
   onOpenNotifications: () -> Unit,
+  onUnblockUser: (String) -> Unit = {},
+  onOpenDataSafety: () -> Unit = {},
   onNotifyMessage: (String) -> Unit
 ) {
   BackHandler(onBack = onBack)
@@ -358,6 +367,12 @@ internal fun ProfileAboutPrivacySubScreen(
               Text("• Google bulut yedeği isteğe bağlıdır; tüm verilerini istediğin an kalıcı silebilirsin.", style = MaterialTheme.typography.bodySmall)
             }
           }
+          StudioGlassButton(
+            text = "Veri Güvenliği Beyanı (Data Safety)",
+            icon = Icons.Rounded.VerifiedUser,
+            onClick = onOpenDataSafety,
+            modifier = Modifier.fillMaxWidth().testTag("open_data_safety_btn")
+          )
         }
       }
     }
@@ -371,7 +386,7 @@ internal fun ProfileAboutPrivacySubScreen(
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
           Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Icon(Icons.Rounded.ChatBubbleOutline, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-            Text("Sohbet Gizliliği", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text("Sohbet & Takip Gizliliği", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
           }
           Text(
             text = "Sana kimlerin doğrudan müzik ve mesaj gönderebileceğini belirle.",
@@ -387,6 +402,26 @@ internal fun ProfileAboutPrivacySubScreen(
                 modifier = Modifier.testTag("profile_chat_privacy_${privacy.name}")
               )
             }
+          }
+          HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.16f))
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Column(modifier = Modifier.weight(1f)) {
+              Text("Takipçi İstek Onayı", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+              Text(
+                text = "Yeni takipçiler sana takipçi olarak eklenmeden önce onayını bekler.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+              )
+            }
+            Switch(
+              checked = appearance.requireFollowApproval,
+              onCheckedChange = onRequireFollowApprovalToggle,
+              modifier = Modifier.testTag("profile_follow_approval_switch")
+            )
           }
         }
       }
@@ -408,6 +443,118 @@ internal fun ProfileAboutPrivacySubScreen(
         },
         onOpenInbox = onOpenNotifications
       )
+    }
+
+    item {
+      GlassStudioCard(
+        highlighted = appearance.backgroundNotifServiceEnabled,
+        cornerRadius = 22.dp,
+        modifier = Modifier.fillMaxWidth().testTag("profile_bg_notif_card")
+      ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(Icons.Rounded.NotificationsActive, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
+            Text("Kesintisiz Arka Plan Bildirimleri", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+          }
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Column(modifier = Modifier.weight(1f)) {
+              Text(
+                text = "Canlı bildirim dinleyici servisi",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold
+              )
+              Text(
+                text = "Uygulama arka planda veya kapalıyken mesaj ve bildirim seslerinin 3. bildirimden sonra kesilmesini engeller.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+              )
+            }
+            Switch(
+              checked = appearance.backgroundNotifServiceEnabled,
+              onCheckedChange = onBackgroundNotifServiceToggle,
+              modifier = Modifier.testTag("profile_bg_notif_switch")
+            )
+          }
+        }
+      }
+    }
+
+    item {
+      GlassStudioCard(
+        highlighted = false,
+        cornerRadius = 22.dp,
+        modifier = Modifier.fillMaxWidth().testTag("blocked_users_management_card")
+      ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+              Icon(Icons.Rounded.Block, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+              Text("Engellenen Kullanıcılar", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
+            Text(
+              text = "${blockedUsers.size}",
+              style = MaterialTheme.typography.labelMedium,
+              color = MaterialTheme.colorScheme.primary,
+              fontWeight = FontWeight.Bold
+            )
+          }
+          if (blockedUsers.isEmpty()) {
+            Text(
+              text = "Engellediğin bir kullanıcı bulunmuyor.",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+          } else {
+            blockedUsers.forEach { blocked ->
+              Surface(
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.56f),
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.fillMaxWidth()
+              ) {
+                Row(
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(10.dp),
+                  modifier = Modifier.padding(10.dp)
+                ) {
+                  StudioAvatar(
+                    photoUrlOrPath = blocked.photoUrl,
+                    contentDescription = blocked.displayName,
+                    size = 38.dp
+                  )
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                      text = blocked.displayName.ifBlank { "Kullanıcı" },
+                      style = MaterialTheme.typography.titleSmall,
+                      fontWeight = FontWeight.Bold,
+                      maxLines = 1,
+                      overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                      text = blocked.handle.ifBlank { "@vizyon" },
+                      style = MaterialTheme.typography.labelSmall,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                      maxLines = 1
+                    )
+                  }
+                  StudioGlassButton(
+                    text = "Engeli Kaldır",
+                    onClick = { onUnblockUser(blocked.blockedUserId.ifBlank { blocked.id }) },
+                    modifier = Modifier.testTag("unblock_user_btn_${blocked.blockedUserId.ifBlank { blocked.id }}")
+                  )
+                }
+              }
+            }
+          }
+        }
+      }
     }
 
     item {
@@ -602,6 +749,14 @@ internal fun ProfileSettingsSubScreen(
                 lockOnLaunch = it
                 onUpdateVaultSettings(rememberMe, lockOnLaunch)
               }
+            )
+          }
+
+          if (appearance.hasVaultPasscode) {
+            Text(
+              text = "Eski şifreni sormadan doğrudan yeni bir stüdyo şifresi belirleyip güncelleyebilirsin.",
+              style = MaterialTheme.typography.labelSmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant
             )
           }
 

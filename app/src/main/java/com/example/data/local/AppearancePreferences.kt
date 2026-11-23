@@ -60,6 +60,8 @@ class AppearancePreferences(context: Context) {
     val VAULT_PASSCODE_HASH = stringPreferencesKey("vault_passcode_hash")
     val VAULT_PASSCODE_SALT = stringPreferencesKey("vault_passcode_salt")
     val NOTIFICATIONS_ENABLED = booleanPreferencesKey("notifications_enabled")
+    val REQUIRE_FOLLOW_APPROVAL = booleanPreferencesKey("require_follow_approval")
+    val BACKGROUND_NOTIF_SERVICE_ENABLED = booleanPreferencesKey("background_notif_service_enabled")
     val LAST_CATALOG_REFRESH_MS = longPreferencesKey("last_catalog_refresh_ms")
     val RECENT_TRACKS_JSON = stringPreferencesKey("recent_tracks_json")
   }
@@ -96,6 +98,8 @@ class AppearancePreferences(context: Context) {
         lockOnLaunch = prefs[Keys.LOCK_ON_LAUNCH] ?: false,
         hasVaultPasscode = !prefs[Keys.VAULT_PASSCODE_HASH].isNullOrBlank(),
         notificationsEnabled = prefs[Keys.NOTIFICATIONS_ENABLED] ?: true,
+        requireFollowApproval = prefs[Keys.REQUIRE_FOLLOW_APPROVAL] ?: false,
+        backgroundNotifServiceEnabled = prefs[Keys.BACKGROUND_NOTIF_SERVICE_ENABLED] ?: true,
         lastCatalogRefreshMs = prefs[Keys.LAST_CATALOG_REFRESH_MS] ?: 0L
       )
     }
@@ -124,6 +128,7 @@ class AppearancePreferences(context: Context) {
         photoUrl = resolvedPhoto,
         favoriteGenres = genres,
         shareActivity = prefs[Keys.SHARE_LISTENING_ACTIVITY] ?: true,
+        requireFollowApproval = prefs[Keys.REQUIRE_FOLLOW_APPROVAL] ?: false,
         chatPrivacy = enumValueOrDefault(prefs[Keys.CHAT_PRIVACY], ChatPrivacy.PUBLIC).name,
         defaultStoryTheme = enumValueOrDefault(prefs[Keys.DEFAULT_STORY_THEME], StoryCardTheme.NEON_WAVE).name,
         securityPasscodeHash = prefs[Keys.VAULT_PASSCODE_HASH] ?: "",
@@ -153,7 +158,9 @@ class AppearancePreferences(context: Context) {
     chatPrivacy: ChatPrivacy = ChatPrivacy.PUBLIC,
     passcode: String = "",
     rememberMe: Boolean = true,
-    lockOnLaunch: Boolean = false
+    lockOnLaunch: Boolean = false,
+    requireFollowApproval: Boolean = false,
+    backgroundNotifServiceEnabled: Boolean = true
   ) {
     val cleanHandle = normalizeHandle(handle)
     val digest =
@@ -172,6 +179,8 @@ class AppearancePreferences(context: Context) {
       prefs[Keys.CORNER_DENSITY] = cornerDensity.name
       prefs[Keys.DEFAULT_STORY_THEME] = defaultStoryTheme.name
       prefs[Keys.CHAT_PRIVACY] = chatPrivacy.name
+      prefs[Keys.REQUIRE_FOLLOW_APPROVAL] = requireFollowApproval
+      prefs[Keys.BACKGROUND_NOTIF_SERVICE_ENABLED] = backgroundNotifServiceEnabled
       prefs[Keys.REMEMBER_ME] = rememberMe
       prefs[Keys.LOCK_ON_LAUNCH] = lockOnLaunch && (digest != null || !prefs[Keys.VAULT_PASSCODE_HASH].isNullOrBlank())
       if (digest != null) {
@@ -288,6 +297,14 @@ class AppearancePreferences(context: Context) {
     dataStore.edit { it[Keys.NOTIFICATIONS_ENABLED] = enabled }
   }
 
+  suspend fun updateRequireFollowApproval(enabled: Boolean) {
+    dataStore.edit { it[Keys.REQUIRE_FOLLOW_APPROVAL] = enabled }
+  }
+
+  suspend fun updateBackgroundNotifServiceEnabled(enabled: Boolean) {
+    dataStore.edit { it[Keys.BACKGROUND_NOTIF_SERVICE_ENABLED] = enabled }
+  }
+
   suspend fun updateThemeMode(mode: AppThemeMode) {
     dataStore.edit { it[Keys.THEME_MODE] = mode.name }
   }
@@ -328,6 +345,7 @@ class AppearancePreferences(context: Context) {
         prefs[Keys.FAVORITE_GENRES] = profile.favoriteGenres.distinct().take(8).joinToString("|")
       }
       prefs[Keys.SHARE_LISTENING_ACTIVITY] = profile.shareActivity
+      prefs[Keys.REQUIRE_FOLLOW_APPROVAL] = profile.requireFollowApproval
       prefs[Keys.CHAT_PRIVACY] =
         enumValueOrDefault(profile.chatPrivacy, ChatPrivacy.PUBLIC).name
       prefs[Keys.DEFAULT_STORY_THEME] =

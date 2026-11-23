@@ -1,6 +1,7 @@
 package com.example.notifications
 
 import android.Manifest
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationChannelGroup
 import android.app.NotificationManager
@@ -19,19 +20,19 @@ import android.graphics.PorterDuffXfermode
 import android.graphics.Rect
 import android.graphics.Shader
 import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
 import android.util.Base64
-import android.view.View
-import android.widget.RemoteViews
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.app.Person
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.IconCompat
 import com.example.MainActivity
 import com.example.R
 import com.example.model.NotificationType
 import com.example.model.UserNotification
-import com.example.util.DevicePerfHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -49,11 +50,14 @@ import java.util.Locale
 import kotlin.math.abs
 
 object VizyonNotificationHelper {
-  const val CHANNEL_ID = "vizyon_social_channel_v5"
-  const val CHANNEL_FOLLOWS = "vizyon_social_follows_v5"
-  const val CHANNEL_REACTIONS = "vizyon_social_reactions_v5"
-  const val CHANNEL_STORIES = "vizyon_social_stories_v5"
-  const val CHANNEL_MESSAGES = "vizyon_social_messages_v5"
+  const val CHANNEL_ID = "vizyon_social_channel_v6"
+  const val CHANNEL_FOLLOWS = "vizyon_social_follows_v6"
+  const val CHANNEL_REACTIONS = "vizyon_social_reactions_v6"
+  const val CHANNEL_STORIES = "vizyon_social_stories_v6"
+  const val CHANNEL_MESSAGES = "vizyon_social_messages_v6"
+  const val CHANNEL_BG_SYNC_STATUS = "vizyon_bg_sync_status_v1"
+
+  const val BG_SYNC_NOTIFICATION_ID = 9001
 
   private val LEGACY_CHANNEL_IDS = listOf(
     "vizyon_social_channel",
@@ -75,7 +79,12 @@ object VizyonNotificationHelper {
     "vizyon_social_follows_v4",
     "vizyon_social_reactions_v4",
     "vizyon_social_stories_v4",
-    "vizyon_social_messages_v4"
+    "vizyon_social_messages_v4",
+    "vizyon_social_channel_v5",
+    "vizyon_social_follows_v5",
+    "vizyon_social_reactions_v5",
+    "vizyon_social_stories_v5",
+    "vizyon_social_messages_v5"
   )
 
   private const val CHANNEL_GROUP_SOCIAL = "vizyon_group_social"
@@ -91,8 +100,21 @@ object VizyonNotificationHelper {
   @Volatile private var lastPostedWallClockMs: Long = 0L
   private val notifScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-  private fun customSoundUri(context: Context): Uri =
-    Uri.parse("android.resource://${context.packageName}/${R.raw.vizyon_notify_chime}")
+  private val clockFormatter = object : ThreadLocal<SimpleDateFormat>() {
+    override fun initialValue(): SimpleDateFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+  }
+
+  private fun customSoundUri(context: Context): Uri {
+    val hasRawChime =
+      runCatching {
+        context.resources.openRawResourceFd(R.raw.vizyon_notify_chime)?.use { true } ?: false
+      }.getOrDefault(false)
+    return if (hasRawChime) {
+      Uri.parse("android.resource://${context.packageName}/${R.raw.vizyon_notify_chime}")
+    } else {
+      RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+    }
+  }
 
   fun ensureChannel(context: Context) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -126,11 +148,11 @@ object VizyonNotificationHelper {
         },
         NotificationChannel(
           CHANNEL_FOLLOWS,
-          "Takipçiler",
+          "Takipçiler ve İstekler",
           NotificationManager.IMPORTANCE_HIGH
         ).apply {
           group = CHANNEL_GROUP_SOCIAL
-          description = "Seni takip eden yeni dinleyiciler"
+          description = "Seni takip edenler ve gelen takip istekleri"
           setSound(chimeUri, audioAttrs)
           enableVibration(true)
           setShowBadge(true)
@@ -159,14 +181,24 @@ object VizyonNotificationHelper {
         },
         NotificationChannel(
           CHANNEL_MESSAGES,
-          "Doğrudan Mesajlar",
+          "Doğrudan ve Sesli Mesajlar",
           NotificationManager.IMPORTANCE_HIGH
         ).apply {
           group = CHANNEL_GROUP_SOCIAL
-          description = "Dinleyicilerden gelen yeni sohbet mesajları ve şarkı önerileri"
+          description = "Dinleyicilerden gelen metin, şarkı, sesli mesaj ve mesaj istekleri"
           setSound(chimeUri, audioAttrs)
           enableVibration(true)
           setShowBadge(true)
+        },
+        NotificationChannel(
+          CHANNEL_BG_SYNC_STATUS,
+          "Arka Plan Bildirim Bağlantısı",
+          NotificationManager.IMPORTANCE_LOW
+        ).apply {
+          description = "Uygulama kapalıyken anlık mesaj ve istek bildirimlerini sessizce dinler"
+          setSound(null, null)
+          enableVibration(false)
+          setShowBadge(false)
         }
       )
       channels.forEach { ch ->
@@ -175,6 +207,32 @@ object VizyonNotificationHelper {
         }
       }
     }
+  }
+
+  fun buildForegroundSyncNotification(context: Context): Notification {
+    val appCtx = context.applicationContext
+    ensureChannel(appCtx)
+    val openIntent =
+      Intent(appCtx, MainActivity::class.java).apply {
+        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+      }
+    val pendingIntent =
+      PendingIntent.getActivity(
+        appCtx,
+        BG_SYNC_NOTIFICATION_ID,
+        openIntent,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+      )
+    return NotificationCompat.Builder(appCtx, CHANNEL_BG_SYNC_STATUS)
+      .setSmallIcon(R.drawable.ic_notif_vizyon)
+      .setContentTitle("Vizyon Music")
+      .setContentText("Anlık mesaj ve sosyal bildirim bağlantısı etkin")
+      .setOngoing(true)
+      .setSilent(true)
+      .setPriority(NotificationCompat.PRIORITY_LOW)
+      .setCategory(NotificationCompat.CATEGORY_SERVICE)
+      .setContentIntent(pendingIntent)
+      .build()
   }
 
   fun hasNotificationPermission(context: Context): Boolean {
@@ -188,9 +246,6 @@ object VizyonNotificationHelper {
     }
   }
 
-  /**
-   * Returns only the user's clean display name, stripping any `@handle` suffix.
-   */
   fun cleanDisplayNameOnly(senderName: String): String {
     val cleaned =
       senderName
@@ -200,10 +255,6 @@ object VizyonNotificationHelper {
     return cleaned.ifBlank { "Vizyon Dinleyicisi" }
   }
 
-  /**
-   * Removes `@handle` references and redundant sender prefixes from notification text
-   * so only the clean message / action remains under the sender's display name.
-   */
   fun sanitizeNotificationMessage(notification: UserNotification): String {
     val displayName = cleanDisplayNameOnly(notification.senderName)
     var body =
@@ -234,10 +285,13 @@ object VizyonNotificationHelper {
       body =
         when (type) {
           NotificationType.FOLLOW -> "Seni takip etmeye başladı"
+          NotificationType.FOLLOW_REQUEST -> "Sana takip isteği gönderdi"
           NotificationType.LIKE -> "Paylaştığın parçayı beğendi"
           NotificationType.COMMENT -> "Paylaşımına yorum yaptı"
           NotificationType.REPOST -> "Paylaşımını yeniden paylaştı"
           NotificationType.STORY -> "Yeni bir müzik hikayesi paylaştı"
+          NotificationType.MESSAGE_REQUEST -> "Sana bir mesaj isteği gönderdi"
+          NotificationType.VOICE_MESSAGE -> "Sana bir sesli mesaj gönderdi"
           NotificationType.MESSAGE ->
             if (notification.trackTitle.isNotBlank()) "Sana bir şarkı önerdi"
             else "Sana yeni bir mesaj gönderdi"
@@ -269,14 +323,24 @@ object VizyonNotificationHelper {
     ensureChannel(appCtx)
 
     notifScope.launch {
-      postMutex.withLock {
-        val elapsed = System.currentTimeMillis() - lastPostedWallClockMs
-        if (elapsed in 0L until 260L) {
-          delay(260L - elapsed)
-        }
-        postSocialNotificationInternal(appCtx, notification)
-        lastPostedWallClockMs = System.currentTimeMillis()
+      postSocialNotificationSuspend(appCtx, notification)
+    }
+  }
+
+  suspend fun postSocialNotificationSuspend(context: Context, notification: UserNotification) {
+    val appCtx = context.applicationContext
+    if (!hasNotificationPermission(appCtx)) return
+    ensureChannel(appCtx)
+
+    // Inter-alert cooldown of 1150ms prevents Android AudioFlinger / NotificationManager
+    // from throttling or muting alert sound & banners after 3 rapid consecutive notifications.
+    postMutex.withLock {
+      val elapsed = System.currentTimeMillis() - lastPostedWallClockMs
+      if (elapsed in 0L until 1150L) {
+        delay(1150L - elapsed)
       }
+      postSocialNotificationInternal(appCtx, notification)
+      lastPostedWallClockMs = System.currentTimeMillis()
     }
   }
 
@@ -285,14 +349,7 @@ object VizyonNotificationHelper {
     if (!hasNotificationPermission(appCtx)) return
     ensureChannel(appCtx)
     runBlocking {
-      postMutex.withLock {
-        val elapsed = System.currentTimeMillis() - lastPostedWallClockMs
-        if (elapsed in 0L until 260L) {
-          delay(260L - elapsed)
-        }
-        postSocialNotificationInternal(appCtx, notification)
-        lastPostedWallClockMs = System.currentTimeMillis()
-      }
+      postSocialNotificationSuspend(appCtx, notification)
     }
   }
 
@@ -300,26 +357,29 @@ object VizyonNotificationHelper {
     val type = NotificationType.fromRaw(notification.type)
     val channelId =
       when (type) {
-        NotificationType.FOLLOW -> CHANNEL_FOLLOWS
+        NotificationType.FOLLOW, NotificationType.FOLLOW_REQUEST -> CHANNEL_FOLLOWS
         NotificationType.STORY -> CHANNEL_STORIES
-        NotificationType.MESSAGE -> CHANNEL_MESSAGES
+        NotificationType.MESSAGE,
+        NotificationType.VOICE_MESSAGE,
+        NotificationType.MESSAGE_REQUEST -> CHANNEL_MESSAGES
         NotificationType.LIKE, NotificationType.COMMENT, NotificationType.REPOST -> CHANNEL_REACTIONS
       }
 
     val displayNameOnly = cleanDisplayNameOnly(notification.senderName)
     val cleanBody = sanitizeNotificationMessage(notification)
     val badgeLabel = type.label
+    val timestampMs = notification.createdAt?.toDate()?.time ?: System.currentTimeMillis()
     val clockLabel =
-      SimpleDateFormat("HH:mm", Locale.getDefault())
-        .format(notification.createdAt?.toDate() ?: Date())
+      runCatching { clockFormatter.get()?.format(Date(timestampMs)).orEmpty() }.getOrDefault("")
 
     val resolvedTargetType =
       notification.targetType.ifBlank {
         when (type) {
           NotificationType.FOLLOW -> "PROFILE"
+          NotificationType.FOLLOW_REQUEST, NotificationType.MESSAGE_REQUEST -> "REQUESTS"
           NotificationType.COMMENT, NotificationType.REPOST, NotificationType.LIKE -> "POST"
           NotificationType.STORY -> "STORY"
-          NotificationType.MESSAGE -> "CHAT"
+          NotificationType.MESSAGE, NotificationType.VOICE_MESSAGE -> "CHAT"
         }
       }
 
@@ -345,13 +405,13 @@ object VizyonNotificationHelper {
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
       )
 
-    val avatarBitmap = loadCircularSenderBitmap(notification.senderAvatarUrl, displayNameOnly)
-    val useLegacyNativeStyle =
-      Build.VERSION.SDK_INT < Build.VERSION_CODES.O || DevicePerfHelper.isConstrainedDevice(appCtx)
-
-    // Keep each alert independent (GROUP_ALERT_CHILDREN + no silent group summary)
-    // so Android never collapses and silences notifications after 2-3 messages.
-    val threadGroupKey = "vizyon_thread_${type.name}_${notification.senderId.ifBlank { "social" }}"
+    // Keep avatar lightweight (64px) and NEVER use multi-bitmap RemoteViews or group bundling,
+    // which triggers Android SystemUI 1MB Binder transaction drops & auto-bundle silencing after #3.
+    val avatarBitmap = loadCircularSenderBitmap(notification.senderAvatarUrl, displayNameOnly, sizePx = 64)
+    val isMessagingCategory =
+      type == NotificationType.MESSAGE ||
+        type == NotificationType.VOICE_MESSAGE ||
+        type == NotificationType.MESSAGE_REQUEST
 
     val builder =
       NotificationCompat.Builder(appCtx, channelId)
@@ -359,24 +419,36 @@ object VizyonNotificationHelper {
         .setLargeIcon(avatarBitmap)
         .setContentTitle(displayNameOnly)
         .setContentText(cleanBody)
-        .setSubText(badgeLabel)
+        .setSubText(if (clockLabel.isNotBlank()) "$badgeLabel • $clockLabel" else badgeLabel)
         .setSound(customSoundUri(appCtx))
         .setDefaults(NotificationCompat.DEFAULT_VIBRATE or NotificationCompat.DEFAULT_LIGHTS)
         .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
         .setCategory(
-          if (type == NotificationType.MESSAGE) NotificationCompat.CATEGORY_MESSAGE
+          if (isMessagingCategory) NotificationCompat.CATEGORY_MESSAGE
           else NotificationCompat.CATEGORY_SOCIAL
         )
         .setPriority(NotificationCompat.PRIORITY_HIGH)
-        .setGroup(threadGroupKey)
-        .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
         .setOnlyAlertOnce(false)
-        .setWhen(notification.createdAt?.toDate()?.time ?: System.currentTimeMillis())
+        .setWhen(timestampMs)
         .setShowWhen(true)
         .setAutoCancel(true)
         .setContentIntent(pendingIntent)
 
-    if (useLegacyNativeStyle) {
+    if (isMessagingCategory) {
+      val mePerson = Person.Builder().setName("Sen").build()
+      val senderPerson =
+        Person.Builder()
+          .setName(displayNameOnly)
+          .setIcon(IconCompat.createWithBitmap(avatarBitmap))
+          .build()
+      val msgText =
+        if (notification.trackTitle.isNotBlank()) "$cleanBody (♪ ${notification.trackTitle})"
+        else cleanBody
+      builder.setStyle(
+        NotificationCompat.MessagingStyle(mePerson)
+          .addMessage(msgText, timestampMs, senderPerson)
+      )
+    } else {
       val bigText =
         if (notification.trackTitle.isNotBlank()) "$cleanBody\n♪ ${notification.trackTitle}"
         else cleanBody
@@ -386,47 +458,6 @@ object VizyonNotificationHelper {
           .bigText(bigText)
           .setSummaryText(badgeLabel)
       )
-    } else {
-      val appliedCustom =
-        runCatching {
-          val collapsedView =
-            RemoteViews(appCtx.packageName, R.layout.notification_vizyon_card_collapsed).apply {
-              setImageViewBitmap(R.id.notif_avatar, avatarBitmap)
-              setTextViewText(R.id.notif_display_name, displayNameOnly)
-              setTextViewText(R.id.notif_badge, badgeLabel)
-              setTextViewText(R.id.notif_message, cleanBody)
-            }
-
-          val expandedView =
-            RemoteViews(appCtx.packageName, R.layout.notification_vizyon_card_expanded).apply {
-              setImageViewBitmap(R.id.notif_avatar, avatarBitmap)
-              setTextViewText(R.id.notif_display_name, displayNameOnly)
-              setTextViewText(R.id.notif_badge, badgeLabel)
-              setTextViewText(R.id.notif_time_hint, "Vizyon Music • $clockLabel")
-              setTextViewText(R.id.notif_message, cleanBody)
-              if (notification.trackTitle.isNotBlank()) {
-                setViewVisibility(R.id.notif_track_chip, View.VISIBLE)
-                setTextViewText(R.id.notif_track_chip, "♪ ${notification.trackTitle}")
-              } else {
-                setViewVisibility(R.id.notif_track_chip, View.GONE)
-              }
-            }
-
-          builder
-            .setCustomContentView(collapsedView)
-            .setCustomBigContentView(expandedView)
-            .setCustomHeadsUpContentView(collapsedView)
-            .setStyle(NotificationCompat.DecoratedCustomViewStyle())
-        }.isSuccess
-
-      if (!appliedCustom) {
-        builder.setStyle(
-          NotificationCompat.BigTextStyle()
-            .setBigContentTitle(displayNameOnly)
-            .bigText(cleanBody)
-            .setSummaryText(badgeLabel)
-        )
-      }
     }
 
     runCatching {
@@ -435,10 +466,13 @@ object VizyonNotificationHelper {
     }
   }
 
-  private fun loadCircularSenderBitmap(avatarUrlOrData: String, displayName: String): Bitmap {
-    val sizePx = 96
+  private fun loadCircularSenderBitmap(
+    avatarUrlOrData: String,
+    displayName: String,
+    sizePx: Int = 64
+  ): Bitmap {
     val rawBitmap =
-      runCatching {
+      try {
         when {
           avatarUrlOrData.startsWith("data:image", ignoreCase = true) -> {
             val base64Part = avatarUrlOrData.substringAfter("base64,", "")
@@ -471,16 +505,16 @@ object VizyonNotificationHelper {
           }
           else -> null
         }
-      }.getOrNull()
+      } catch (_: Throwable) {
+        null
+      }
 
     return if (rawBitmap != null && !rawBitmap.isRecycled && rawBitmap.width > 0 && rawBitmap.height > 0) {
-      val circled =
-        runCatching { cropToCircle(rawBitmap, sizePx) }.getOrNull()
-          ?: createMonogramAvatarBitmap(displayName, sizePx)
-      if (rawBitmap !== circled && !rawBitmap.isRecycled) {
-        runCatching { rawBitmap.recycle() }
+      try {
+        cropToCircle(rawBitmap, sizePx)
+      } catch (_: Throwable) {
+        createMonogramAvatarBitmap(displayName, sizePx)
       }
-      circled
     } else {
       createMonogramAvatarBitmap(displayName, sizePx)
     }
@@ -514,7 +548,6 @@ object VizyonNotificationHelper {
     canvas.drawCircle(radius, radius, radius, paint)
     paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_IN)
     canvas.drawBitmap(scaled, Rect(0, 0, sizePx, sizePx), Rect(0, 0, sizePx, sizePx), paint)
-    if (scaled !== source && !scaled.isRecycled) scaled.recycle()
     return output
   }
 

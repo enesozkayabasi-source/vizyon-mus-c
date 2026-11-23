@@ -52,30 +52,39 @@ class ExampleRobolectricTest {
   }
 
   @Test
-  fun `first launch 4 step onboarding, pure stories, story viewer buttons, long press delete, and top settings work end to end`() {
+  fun `first launch 8 step onboarding, pure stories, requests sheet, data safety, long press delete, and top settings work end to end`() {
     composeTestRule.waitUntil(timeoutMillis = 5000L) {
       composeTestRule.onAllNodesWithTag("onboarding_screen").fetchSemanticsNodes().isNotEmpty()
     }
     composeTestRule.onNodeWithTag("onboarding_screen").assertIsDisplayed()
 
-    // Step 0 (1. Kimlik): Cloud restore CTA, photo picker & identity inputs
+    // Step 0 (1. Hoş Geldin & Bulut Geri Yükleme)
     composeTestRule.onNodeWithTag("onboarding_cloud_restore_btn").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("onboarding_next_btn").performClick()
+    composeTestRule.waitForIdle()
+
+    // Step 1 (2. Kimlik & Avatar)
     composeTestRule.onNodeWithTag("onboarding_pick_photo_btn").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("onboarding_name_input").performScrollTo().performTextInput("Deniz Kaya")
     composeTestRule.onNodeWithTag("onboarding_handle_input").performScrollTo().performTextInput("denizkaya")
     composeTestRule.onNodeWithTag("onboarding_next_btn").performClick()
     composeTestRule.waitForIdle()
 
-    // Step 1 (2. Tema & Stil): Live preview, theme, story style, DM privacy & share switch
+    // Step 2 (3. Tema & Canlı Önizleme)
     composeTestRule.onNodeWithTag("onboarding_live_preview_card").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("onboarding_theme_NIGHT_AMOLED").performScrollTo().performClick()
-    composeTestRule.onNodeWithTag("onboarding_story_theme_AMOLED_GOLD").performScrollTo().performClick()
-    composeTestRule.onNodeWithTag("onboarding_chat_privacy_PUBLIC").performScrollTo().performClick()
-    composeTestRule.onNodeWithTag("onboarding_share_switch").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("onboarding_next_btn").performClick()
     composeTestRule.waitForIdle()
 
-    // Step 2 (3. Tarzlar): Acoustic waveform, Language card, Turkish categorized genres + Global genres
+    // Step 3 (4. Hikaye Stili, Sohbet & Takip Onayı Gizliliği)
+    composeTestRule.onNodeWithTag("onboarding_story_theme_AMOLED_GOLD").performScrollTo().performClick()
+    composeTestRule.onNodeWithTag("onboarding_chat_privacy_PUBLIC").performScrollTo().performClick()
+    composeTestRule.onNodeWithTag("onboarding_share_switch").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("onboarding_follow_approval_switch").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("onboarding_next_btn").performClick()
+    composeTestRule.waitForIdle()
+
+    // Step 4 (5. Dil & Müzik Tarzları)
     composeTestRule.onNodeWithTag("onboarding_live_waveform").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("onboarding_lang_card_BILINGUAL").performScrollTo().performClick()
     composeTestRule.onNodeWithTag("genre_chip_ARABESK_FANTASY").performScrollTo().performClick()
@@ -83,12 +92,21 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("onboarding_next_btn").performClick()
     composeTestRule.waitForIdle()
 
-    // Step 3 (4. Güvenlik & Özet): Passcode vault, 13+ age gate & setup summary -> DiscoverScreen
+    // Step 5 (6. Güvenlik Kasası Şifresi)
     composeTestRule.onNodeWithTag("onboarding_passcode_input").performScrollTo().performTextInput("123456")
     composeTestRule.onNodeWithTag("onboarding_passcode_confirm_input").performScrollTo().performTextInput("123456")
     composeTestRule.onNodeWithTag("onboarding_remember_me_switch").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("onboarding_next_btn").performClick()
+    composeTestRule.waitForIdle()
+
+    // Step 6 (7. Ağ Kontrolü, 13+ Yaş Onayı & Arka Plan Bildirimleri)
     composeTestRule.onNodeWithTag("check_network_btn").performScrollTo().performClick()
     composeTestRule.onNodeWithTag("onboarding_age_switch").performScrollTo().performClick()
+    composeTestRule.onNodeWithTag("onboarding_bg_notif_switch").performScrollTo().assertIsDisplayed()
+    composeTestRule.onNodeWithTag("onboarding_next_btn").performClick()
+    composeTestRule.waitForIdle()
+
+    // Step 7 (8. Kurulum Özeti & Tamamla -> DiscoverScreen)
     composeTestRule.onNodeWithTag("onboarding_setup_summary_card").performScrollTo().assertIsDisplayed()
     composeTestRule.onNodeWithTag("onboarding_complete_btn").performClick()
     composeTestRule.waitUntil(timeoutMillis = 5000L) {
@@ -142,6 +160,15 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithTag("feed_tab_FOLLOWING").assertIsDisplayed()
     composeTestRule.onNodeWithTag("feed_tab_LISTENERS").assertIsDisplayed()
     composeTestRule.onNodeWithTag("feed_tab_CHATS").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("feed_requests_btn").assertIsDisplayed().performClick()
+    composeTestRule.mainClock.advanceTimeBy(350L)
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("requests_modal_sheet").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("requests_tab_follow").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("requests_tab_message").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("close_requests_sheet_btn").performClick()
+    composeTestRule.mainClock.advanceTimeBy(300L)
+    composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("feed_stories_strip").assertIsDisplayed()
     composeTestRule.onNodeWithTag("feed_quick_composer").assertIsDisplayed()
     assertEquals(0, composeTestRule.onAllNodesWithText("EN SON DİNLEDİĞİ").fetchSemanticsNodes().size)
@@ -295,15 +322,33 @@ class ExampleRobolectricTest {
     composeTestRule.mainClock.advanceTimeBy(400L)
     composeTestRule.waitForIdle()
 
-    // Sub-page 2: Hakkında & Gizlilik
+    // Sub-page 2: Hakkında & Gizlilik -> Data Safety, Follow Approval, Background Service & Blocked Users
     composeTestRule.onNodeWithTag("open_about_privacy_btn").performClick()
     composeTestRule.mainClock.advanceTimeBy(400L)
     composeTestRule.waitForIdle()
     composeTestRule.onNodeWithTag("profile_about_privacy_subscreen").assertIsDisplayed()
     composeTestRule.onNodeWithTag("about_vizyon_card").assertIsDisplayed()
     composeTestRule.onNodeWithTag("profile_about_privacy_subscreen")
+      .performScrollToNode(hasTestTag("open_data_safety_btn"))
+    composeTestRule.onNodeWithTag("open_data_safety_btn").assertIsDisplayed().performClick()
+    composeTestRule.mainClock.advanceTimeBy(350L)
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("data_safety_modal_sheet").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("close_data_safety_sheet_btn").performClick()
+    composeTestRule.mainClock.advanceTimeBy(300L)
+    composeTestRule.waitForIdle()
+    composeTestRule.onNodeWithTag("profile_about_privacy_subscreen")
+      .performScrollToNode(hasTestTag("profile_follow_approval_switch"))
+    composeTestRule.onNodeWithTag("profile_follow_approval_switch").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("profile_about_privacy_subscreen")
       .performScrollToNode(hasTestTag("notifications_permission_switch"))
     composeTestRule.onNodeWithTag("notifications_permission_switch").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("profile_about_privacy_subscreen")
+      .performScrollToNode(hasTestTag("profile_bg_notif_switch"))
+    composeTestRule.onNodeWithTag("profile_bg_notif_switch").assertIsDisplayed()
+    composeTestRule.onNodeWithTag("profile_about_privacy_subscreen")
+      .performScrollToNode(hasTestTag("blocked_users_management_card"))
+    composeTestRule.onNodeWithTag("blocked_users_management_card").assertIsDisplayed()
     composeTestRule.onNodeWithTag("profile_about_privacy_subscreen")
       .performScrollToNode(hasTestTag("profile_subpage_back_btn"))
     composeTestRule.onNodeWithTag("profile_subpage_back_btn").performClick()

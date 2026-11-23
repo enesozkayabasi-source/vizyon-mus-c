@@ -29,6 +29,7 @@ import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.PersonAdd
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -310,23 +311,37 @@ fun StudioFollowToggleButton(
   onClick: () -> Unit,
   modifier: Modifier = Modifier,
   followLabel: String = "Takip Et",
-  followingLabel: String = "Takipte"
+  followingLabel: String = "Takipte",
+  isPending: Boolean = false,
+  pendingLabel: String = "İstek Gönderildi"
 ) {
   val interactionSource = remember { MutableInteractionSource() }
   val scale = rememberPressScale(interactionSource)
+  val showPending = isPending && !isFollowing
   val bg by animateColorAsState(
     targetValue =
-      if (isFollowing) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
-      else MaterialTheme.colorScheme.primary,
+      when {
+        isFollowing -> MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+        showPending -> MaterialTheme.colorScheme.secondary.copy(alpha = 0.16f)
+        else -> MaterialTheme.colorScheme.primary
+      },
     label = "follow_pill_bg"
   )
   val border by animateColorAsState(
     targetValue =
-      if (isFollowing) MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
-      else Color.White.copy(alpha = 0.30f),
+      when {
+        isFollowing -> MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+        showPending -> MaterialTheme.colorScheme.secondary.copy(alpha = 0.55f)
+        else -> Color.White.copy(alpha = 0.30f)
+      },
     label = "follow_pill_border"
   )
-  val contentColor = if (isFollowing) MaterialTheme.colorScheme.primary else Color.White
+  val contentColor =
+    when {
+      isFollowing -> MaterialTheme.colorScheme.primary
+      showPending -> MaterialTheme.colorScheme.secondary
+      else -> Color.White
+    }
   val shape = RoundedCornerShape(999.dp)
 
   Box(
@@ -334,7 +349,7 @@ fun StudioFollowToggleButton(
     modifier =
       modifier
         .scale(scale)
-        .defaultMinSize(minHeight = 40.dp)
+        .defaultMinSize(minHeight = 48.dp)
         .clip(shape)
         .background(bg)
         .border(1.dp, border, shape)
@@ -343,18 +358,28 @@ fun StudioFollowToggleButton(
           indication = null,
           onClick = onClick
         )
-        .padding(horizontal = 14.dp, vertical = 8.dp)
+        .padding(horizontal = 14.dp, vertical = 10.dp)
   ) {
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
       Icon(
-        imageVector = if (isFollowing) Icons.Rounded.Check else Icons.Rounded.PersonAdd,
+        imageVector =
+          when {
+            isFollowing -> Icons.Rounded.Check
+            showPending -> Icons.Rounded.Schedule
+            else -> Icons.Rounded.PersonAdd
+          },
         contentDescription = null,
         tint = contentColor,
         modifier = Modifier.size(16.dp)
       )
       Spacer(modifier = Modifier.width(6.dp))
       Text(
-        text = if (isFollowing) followingLabel else followLabel,
+        text =
+          when {
+            isFollowing -> followingLabel
+            showPending -> pendingLabel
+            else -> followLabel
+          },
         style = MaterialTheme.typography.labelLarge,
         fontWeight = FontWeight.Bold,
         color = contentColor,

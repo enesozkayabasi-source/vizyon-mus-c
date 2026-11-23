@@ -13,7 +13,9 @@ import androidx.room.RoomDatabase
 import com.example.model.ActivityComment
 import com.example.model.ActivityFeedItem
 import com.example.model.ArtistFanPost
+import com.example.model.BlockedUser
 import com.example.model.DirectChatMessage
+import com.example.model.DirectMessageType
 import com.example.model.FollowConnection
 import com.example.model.FollowedArtist
 import com.example.model.MusicStoryItem
@@ -342,6 +344,9 @@ data class LocalDirectMessageEntity(
   val senderHandle: String,
   val senderAvatarUrl: String = "",
   val text: String,
+  val messageType: String = DirectMessageType.TEXT.name,
+  val audioBase64: String = "",
+  val audioDurationMs: Long = 0L,
   val trackId: String = "",
   val trackTitle: String = "",
   val artistName: String = "",
@@ -360,12 +365,35 @@ data class LocalDirectMessageEntity(
       senderHandle = senderHandle,
       senderAvatarUrl = senderAvatarUrl,
       text = text,
+      messageType = messageType,
+      audioBase64 = audioBase64,
+      audioDurationMs = audioDurationMs,
       trackId = trackId,
       trackTitle = trackTitle,
       artistName = artistName,
       albumArtUrl = albumArtUrl,
       youtubeVideoId = youtubeVideoId,
       source = source,
+      createdAt = Timestamp(Date(createdAtMs)),
+      updatedAt = Timestamp(Date(createdAtMs))
+    )
+}
+
+@Entity(tableName = "local_blocked_users")
+data class LocalBlockedUserEntity(
+  @PrimaryKey val blockedUserId: String,
+  val displayName: String,
+  val handle: String,
+  val photoUrl: String = "",
+  val createdAtMs: Long = System.currentTimeMillis()
+) {
+  fun toBlockedUser(): BlockedUser =
+    BlockedUser(
+      id = blockedUserId,
+      blockedUserId = blockedUserId,
+      displayName = displayName,
+      handle = handle,
+      photoUrl = photoUrl,
       createdAt = Timestamp(Date(createdAtMs)),
       updatedAt = Timestamp(Date(createdAtMs))
     )
@@ -532,6 +560,18 @@ interface LocalLibraryDao {
   @Query("DELETE FROM local_direct_messages")
   suspend fun deleteAllDirectMessages()
 
+  @Query("SELECT * FROM local_blocked_users ORDER BY createdAtMs DESC")
+  fun observeBlockedUsers(): Flow<List<LocalBlockedUserEntity>>
+
+  @Insert(onConflict = OnConflictStrategy.REPLACE)
+  suspend fun upsertBlockedUser(entity: LocalBlockedUserEntity)
+
+  @Query("DELETE FROM local_blocked_users WHERE blockedUserId = :blockedUserId")
+  suspend fun deleteBlockedUser(blockedUserId: String)
+
+  @Query("DELETE FROM local_blocked_users")
+  suspend fun deleteAllBlockedUsers()
+
   suspend fun clearAllUserData() {
     deleteAllPlaylistTracks()
     deleteAllPlaylists()
@@ -544,6 +584,7 @@ interface LocalLibraryDao {
     deleteAllNotifications()
     deleteAllFollowing()
     deleteAllDirectMessages()
+    deleteAllBlockedUsers()
   }
 }
 
@@ -559,9 +600,10 @@ interface LocalLibraryDao {
     LocalStoryEntity::class,
     LocalNotificationEntity::class,
     LocalFollowingEntity::class,
-    LocalDirectMessageEntity::class
+    LocalDirectMessageEntity::class,
+    LocalBlockedUserEntity::class
   ],
-  version = 7,
+  version = 8,
   exportSchema = false
 )
 abstract class VizyonDatabase : RoomDatabase() {
