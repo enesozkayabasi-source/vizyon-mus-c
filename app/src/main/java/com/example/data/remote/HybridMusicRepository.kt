@@ -23,6 +23,8 @@ import java.text.Normalizer
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import kotlin.math.abs
+import kotlin.math.log10
 
 object KidsContentFilter {
   private val blockedGenreTokens =
@@ -362,7 +364,9 @@ class HybridMusicRepository {
               tracks.firstOrNull { it.artistName.equals(art.name, ignoreCase = true) }?.artworkUrl.orEmpty()
             }
           art.copy(imageUrl = fallbackImg)
-        } + derivedArtists).distinctBy { it.name.lowercase(Locale.ROOT) }
+        } + derivedArtists)
+          .distinctBy { it.name.lowercase(Locale.ROOT) }
+          .distinctBy { it.artistId }
 
       Pair(tracks, mergedArtists)
     }
@@ -406,17 +410,60 @@ class HybridMusicRepository {
     forceRefresh: Boolean = false,
     excludedVideoIds: Set<String> = emptySet()
   ): VideoResolutionResult {
-    if (!forceRefresh && track.youtubeVideoId.isNotBlank() && track.youtubeVideoId !in excludedVideoIds) {
-      return VideoResolutionResult.Success(track)
+    val nowMs = System.currentTimeMillis()
+    val effectiveExcluded = excludedVideoIds.toMutableSet()
+
+    if (forceRefresh) {
+      videoMatchCache.remove(track.trackId)
+    } else if (track.youtubeVideoId.isNotBlank() && track.youtubeVideoId !in effectiveExcluded) {
+      val cached = videoMatchCache[track.trackId]
+      if (cached != null && cached.videoId == track.youtubeVideoId && nowMs - cached.cachedAtMs < VIDEO_CACHE_TTL_MS) {
+        return VideoResolutionResult.Success(track)
+      }
+      if (!isYouTubeConfigured()) {
+        return VideoResolutionResult.Success(track)
+      }
+      // Lightweight 1-unit verification: ensure pre-saved ID is still embeddable and matches the track title/artist
+      val verificationResp =
+        runCatching { youtubeApi.getVideoDetails(videoIds = track.youtubeVideoId) }.getOrNull()
+      if (verificationResp == null) {
+        // Network/API transiently unavailable; preserve pre-attached videoId instead of blocking playback
+        return VideoResolutionResult.Success(track)
+      }
+      val existingDetail = verificationResp.items.firstOrNull { it.id == track.youtubeVideoId }
+      if (existingDetail != null && existingDetail.status?.embeddable != false) {
+        val asSearchItem =
+          YouTubeSearchItem(
+            id = YouTubeSearchId(kind = "youtube#video", videoId = existingDetail.id),
+            snippet = existingDetail.snippet
+          )
+        val existingScore =
+          scoreYouTubeCandidate(
+            item = asSearchItem,
+            targetTitle = cleanSearchTerm(track.title),
+            targetArtist = cleanSearchTerm(track.artistName),
+            detail = existingDetail,
+            targetDurationMs = track.durationMs
+          )
+        if (existingScore >= MINIMUM_CONFIDENCE_MATCH_SCORE && isPlausibleVideoDuration(existingDetail, track.durationMs)) {
+          val durMs =
+            parseIsoDurationMsOrNull(existingDetail.contentDetails?.duration)
+              ?: track.durationMs.takeIf { it > 0L }
+              ?: 210_000L
+          videoMatchCache[track.trackId] = CachedVideoMatch(existingDetail.id, durMs, nowMs)
+          return VideoResolutionResult.Success(track.copy(durationMs = durMs))
+        }
+      }
+      // Pre-attached video was deleted, unembeddable, or mismatched; exclude it and re-resolve cleanly
+      effectiveExcluded.add(track.youtubeVideoId)
     }
 
-    val nowMs = System.currentTimeMillis()
     if (!forceRefresh) {
       videoMatchCache[track.trackId]?.let { cached ->
         if (
           nowMs - cached.cachedAtMs < VIDEO_CACHE_TTL_MS &&
             cached.videoId.isNotBlank() &&
-            cached.videoId !in excludedVideoIds
+            cached.videoId !in effectiveExcluded
         ) {
           return VideoResolutionResult.Success(
             track.copy(
@@ -434,62 +481,115 @@ class HybridMusicRepository {
 
     val cleanedTitle = cleanSearchTerm(track.title)
     val cleanedArtist = cleanSearchTerm(track.artistName)
-    val query = "$cleanedArtist $cleanedTitle official".trim()
+    val primaryArtist = extractPrimaryArtist(cleanedArtist)
+    val targetDurMs = track.durationMs
+
+    val seenCandidateIds = effectiveExcluded.toMutableSet()
+    val candidatePool = mutableListOf<YouTubeSearchItem>()
+    val detailMap = mutableMapOf<String, YouTubeVideoItem>()
+
+    suspend fun queryAndInspect(query: String, categoryId: String?, limit: Int) {
+      val cleanQ = query.trim()
+      if (cleanQ.isBlank()) return
+      val resp =
+        youtubeApi.searchMusicCategory(
+          query = cleanQ,
+          type = "video",
+          videoCategoryId = categoryId,
+          videoEmbeddable = "true",
+          maxResults = limit
+        )
+      val fresh =
+        filterSafeYouTubeCandidates(resp.items, seenCandidateIds)
+          .onEach { seenCandidateIds.add(it.id.videoId) }
+      if (fresh.isEmpty()) return
+      candidatePool.addAll(fresh)
+
+      val topToInspect =
+        fresh
+          .sortedByDescending { scoreYouTubeCandidate(it, cleanedTitle, cleanedArtist) }
+          .take(8)
+          .map { it.id.videoId }
+          .filter { it !in detailMap }
+      if (topToInspect.isNotEmpty()) {
+        runCatching { youtubeApi.getVideoDetails(videoIds = topToInspect.joinToString(",")).items }
+          .getOrDefault(emptyList())
+          .forEach { item -> detailMap[item.id] = item }
+      }
+    }
+
+    fun bestRankedEmbeddable(): Pair<YouTubeSearchItem, Int>? =
+      candidatePool
+        .asSequence()
+        .filter { cand ->
+          val vid = cand.id.videoId
+          val detail = detailMap[vid]
+          vid.isNotBlank() &&
+            vid !in effectiveExcluded &&
+            (detail == null || detail.status?.embeddable != false) &&
+            isPlausibleVideoDuration(detail, targetDurMs)
+        }
+        .map { cand ->
+          cand to
+            scoreYouTubeCandidate(
+              item = cand,
+              targetTitle = cleanedTitle,
+              targetArtist = cleanedArtist,
+              detail = detailMap[cand.id.videoId],
+              targetDurationMs = targetDurMs
+            )
+        }
+        .maxByOrNull { it.second }
 
     return try {
-      val primaryResp =
-        youtubeApi.searchMusicCategory(
-          query = query,
-          type = "video",
-          videoCategoryId = "10",
-          videoEmbeddable = "true",
-          maxResults = 10
+      // Stage 1: Exact "Artist - Title" in YouTube Music category (captures Topic + Official Audio + Clips)
+      queryAndInspect(
+        query = listOf(cleanedArtist, cleanedTitle).filter { it.isNotBlank() }.joinToString(" - "),
+        categoryId = "10",
+        limit = 12
+      )
+
+      val afterStage1 = bestRankedEmbeddable()
+      // Stage 2: Broaden across categories if no high-confidence match yet (some labels upload under Entertainment)
+      if (afterStage1 == null || afterStage1.second < HIGH_CONFIDENCE_MATCH_SCORE) {
+        queryAndInspect(
+          query = "$cleanedArtist $cleanedTitle".trim(),
+          categoryId = null,
+          limit = 10
         )
-      var candidates = filterSafeYouTubeCandidates(primaryResp.items, excludedVideoIds)
-      if (candidates.isEmpty()) {
-        val fallbackResp =
-          youtubeApi.searchMusicCategory(
-            query = "$cleanedArtist $cleanedTitle".trim(),
-            type = "video",
-            videoCategoryId = null,
-            videoEmbeddable = "true",
-            maxResults = 10
-          )
-        candidates = filterSafeYouTubeCandidates(fallbackResp.items, excludedVideoIds)
       }
 
-      if (candidates.isEmpty()) {
+      val afterStage2 = bestRankedEmbeddable()
+      // Stage 3: Fallback using primary solo artist when collaboration formatting obscures results
+      if ((afterStage2 == null || afterStage2.second < MINIMUM_CONFIDENCE_MATCH_SCORE + 20) &&
+        primaryArtist.isNotBlank() &&
+        !primaryArtist.equals(cleanedArtist, ignoreCase = true)
+      ) {
+        queryAndInspect(
+          query = "$primaryArtist - $cleanedTitle".trim(),
+          categoryId = null,
+          limit = 8
+        )
+      }
+
+      if (candidatePool.isEmpty()) {
         return VideoResolutionResult.NotFound(
           track,
           "\"${track.title}\" için yerleştirilebilir resmi YouTube videosu bulunamadı."
         )
       }
 
-      val orderedCandidates =
-        candidates
-          .sortedByDescending { scoreYouTubeCandidate(it, cleanedTitle, cleanedArtist) }
-          .take(5)
+      val bestMatch = bestRankedEmbeddable()
+      if (bestMatch == null || bestMatch.second < MINIMUM_CONFIDENCE_MATCH_SCORE) {
+        return VideoResolutionResult.NotFound(
+          track,
+          "\"${track.title}\" için şarkı adı ve sanatçıyla eşleşen doğrulanabilir bir video bulunamadı."
+        )
+      }
 
-      val candidateIds = orderedCandidates.map { it.id.videoId }.joinToString(",")
-      val detailItems =
-        runCatching { youtubeApi.getVideoDetails(videoIds = candidateIds).items }
-          .getOrDefault(emptyList())
-          .associateBy { it.id }
-
-      val embeddableCandidate =
-        orderedCandidates.firstOrNull { cand ->
-          val detail = detailItems[cand.id.videoId]
-          detail == null || detail.status?.embeddable != false
-        }
-          ?: return VideoResolutionResult.NotFound(
-            track,
-            "\"${track.title}\" için eşleşen videoların gömülü oynatma (embed) izni kapalı."
-          )
-
-      val bestVideoId = embeddableCandidate.id.videoId
+      val bestVideoId = bestMatch.first.id.videoId
       val detailDurMs =
-        detailItems[bestVideoId]?.contentDetails?.duration
-          ?.let(::parseIsoDurationMs)
+        parseIsoDurationMsOrNull(detailMap[bestVideoId]?.contentDetails?.duration)
           ?: track.durationMs.takeIf { it > 0L }
           ?: 210_000L
 
@@ -525,18 +625,33 @@ class HybridMusicRepository {
     }
   }
 
+  private fun isPlausibleVideoDuration(
+    detail: YouTubeVideoItem?,
+    targetDurationMs: Long
+  ): Boolean {
+    val videoDurMs = parseIsoDurationMsOrNull(detail?.contentDetails?.duration) ?: return true
+    if (targetDurationMs <= 30_000L) return true
+    if (videoDurMs < 45_000L && targetDurationMs > 60_000L) return false
+    val maxAllowedMs = maxOf((targetDurationMs * 2.5).toLong(), 14L * 60_000L)
+    if (videoDurMs > maxAllowedMs) return false
+    return true
+  }
+
   private fun filterSafeYouTubeCandidates(
     items: List<YouTubeSearchItem>,
     excludedVideoIds: Set<String>
   ): List<YouTubeSearchItem> =
     items.filter { item ->
       val vid = item.id.videoId
+      val decodedTitle = decodeHtmlEntities(item.snippet.title)
+      val decodedChannel = decodeHtmlEntities(item.snippet.channelTitle)
+      val decodedDesc = decodeHtmlEntities(item.snippet.description)
       vid.isNotBlank() &&
         vid !in excludedVideoIds &&
         !KidsContentFilter.isChildContent(
-          title = item.snippet.title,
-          artistName = item.snippet.channelTitle,
-          albumName = item.snippet.description
+          title = decodedTitle,
+          artistName = decodedChannel,
+          albumName = decodedDesc
         )
     }
 
@@ -577,6 +692,19 @@ class HybridMusicRepository {
     val cleanArtist = artistName.trim()
     if (trackId <= 0L || cleanTitle.isBlank() || cleanArtist.isBlank()) return null
     if (KidsContentFilter.isChildContent(cleanTitle, cleanArtist, collectionName, primaryGenreName)) {
+      return null
+    }
+    val normTrackMeta = KidsContentFilter.normalize("$cleanTitle $cleanArtist $collectionName")
+    if (
+      normTrackMeta.containsAny(
+        "made famous by",
+        "tribute to",
+        "karaoke box",
+        "prosound karaoke",
+        "ringtone",
+        "8-bit arcade"
+      )
+    ) {
       return null
     }
     val mappedCategory =
@@ -727,52 +855,255 @@ class HybridMusicRepository {
   private fun String.containsAny(vararg needles: String): Boolean =
     needles.any { this.contains(it) }
 
-  private fun cleanSearchTerm(raw: String): String =
-    raw
-      .replace(Regex("\\((official|feat\\.|ft\\.|remaster|live|acoustic|remix).*?\\)", RegexOption.IGNORE_CASE), "")
+  internal fun cleanSearchTerm(raw: String): String =
+    decodeHtmlEntities(raw)
+      .replace(
+        Regex(
+          "\\((official|feat\\.|ft\\.|with |remaster|deluxe|bonus|original|from |single|ep|version|radio edit|mono|stereo).*?\\)",
+          RegexOption.IGNORE_CASE
+        ),
+        ""
+      )
       .replace(Regex("\\[.*?]"), "")
+      .replace(Regex("\\s+-\\s+(single|ep|remaster(?:ed)?(?:\\s+\\d{4})?|deluxe.*|album version|radio edit)$", RegexOption.IGNORE_CASE), "")
+      .replace(Regex("\\s+(feat\\.|ft\\.)\\s+[^-()\\[\\]]+$", RegexOption.IGNORE_CASE), "")
       .replace(Regex("\\s{2,}"), " ")
       .trim()
       .ifBlank { raw.trim() }
 
+  internal fun extractPrimaryArtist(rawArtist: String): String {
+    val clean = cleanSearchTerm(rawArtist)
+    return clean
+      .split(Regex("\\s*(?:,|&|\\bx\\b|\\bfeat\\.?\\b|\\bft\\.?\\b|\\bwith\\b)\\s*", RegexOption.IGNORE_CASE))
+      .firstOrNull { it.isNotBlank() }
+      ?.trim()
+      ?.ifBlank { clean }
+      ?: clean
+  }
+
+  internal fun decodeHtmlEntities(raw: String): String {
+    if (raw.isBlank() || !raw.contains('&')) return raw
+    var decoded =
+      raw
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&nbsp;", " ")
+    decoded =
+      Regex("&#(\\d+);").replace(decoded) { match ->
+        match.groupValues[1].toIntOrNull()?.toChar()?.toString() ?: match.value
+      }
+    decoded =
+      Regex("&#x([0-9a-fA-F]+);").replace(decoded) { match ->
+        match.groupValues[1].toIntOrNull(16)?.toChar()?.toString() ?: match.value
+      }
+    return decoded
+  }
+
+  private fun tokenizeWords(normalized: String): List<String> =
+    normalized.split(Regex("[^a-z0-9]+")).filter { it.isNotBlank() }
+
+  private fun containsWholePhrase(haystackNorm: String, phraseNorm: String): Boolean {
+    if (phraseNorm.isBlank() || haystackNorm.isBlank()) return false
+    val pattern = Regex("(^|[^a-z0-9])${Regex.escape(phraseNorm)}([^a-z0-9]|$)")
+    return pattern.containsMatchIn(haystackNorm)
+  }
+
   internal fun pickBestYouTubeCandidate(
     items: List<YouTubeSearchItem>,
     targetTitle: String,
-    targetArtist: String
+    targetArtist: String,
+    detailsById: Map<String, YouTubeVideoItem> = emptyMap(),
+    targetDurationMs: Long = 0L
   ): YouTubeSearchItem? =
-    items.maxByOrNull { scoreYouTubeCandidate(it, targetTitle, targetArtist) }
+    items.maxByOrNull {
+      scoreYouTubeCandidate(
+        item = it,
+        targetTitle = targetTitle,
+        targetArtist = targetArtist,
+        detail = detailsById[it.id.videoId],
+        targetDurationMs = targetDurationMs
+      )
+    }
 
   internal fun scoreYouTubeCandidate(
     item: YouTubeSearchItem,
     targetTitle: String,
-    targetArtist: String
+    targetArtist: String,
+    detail: YouTubeVideoItem? = null,
+    targetDurationMs: Long = 0L
   ): Int {
-    val normTitle = KidsContentFilter.normalize(targetTitle)
-    val normArtist = KidsContentFilter.normalize(targetArtist)
-    val titleTokens = normTitle.split(Regex("\\s+")).filter { it.length > 1 }
-    val artistTokens = normArtist.split(Regex("\\s+")).filter { it.length > 1 }
-    val candTitle = KidsContentFilter.normalize(item.snippet.title)
-    val candChannel = KidsContentFilter.normalize(item.snippet.channelTitle)
+    val cleanTargetTitle = cleanSearchTerm(targetTitle)
+    val cleanTargetArtist = cleanSearchTerm(targetArtist)
+    val normTitle = KidsContentFilter.normalize(cleanTargetTitle)
+    val normArtist = KidsContentFilter.normalize(cleanTargetArtist)
+    val normPrimaryArtist = KidsContentFilter.normalize(extractPrimaryArtist(cleanTargetArtist))
+
+    val rawTitleTokens = tokenizeWords(normTitle)
+    val meaningfulTitleTokens =
+      rawTitleTokens.filter { it !in MATCH_STOPWORDS }.ifEmpty { rawTitleTokens }
+    val rawArtistTokens = tokenizeWords(normArtist)
+    val meaningfulArtistTokens =
+      rawArtistTokens.filter { it !in MATCH_STOPWORDS && it.length > 1 }.ifEmpty { rawArtistTokens }
+
+    val decodedTitle = decodeHtmlEntities(item.snippet.title)
+    val decodedChannel = decodeHtmlEntities(item.snippet.channelTitle)
+    val decodedDesc = decodeHtmlEntities(detail?.snippet?.description ?: item.snippet.description)
+
+    val candTitle = KidsContentFilter.normalize(decodedTitle)
+    val candChannel = KidsContentFilter.normalize(decodedChannel)
+    val candDesc = KidsContentFilter.normalize(decodedDesc)
+
+    val candTitleTokens = tokenizeWords(candTitle).toSet()
+    val candChannelTokens = tokenizeWords(candChannel).toSet()
+    val candDescTokens = tokenizeWords(candDesc).toSet()
+
     var score = 0
-    if (candTitle.contains(normTitle)) score += 60
-    if (candTitle.contains(normArtist) || candChannel.contains(normArtist)) score += 45
-    titleTokens.forEach { tok -> if (candTitle.contains(tok)) score += 10 }
-    artistTokens.forEach { tok -> if (candTitle.contains(tok) || candChannel.contains(tok)) score += 8 }
-    if (candTitle.contains("official") || candChannel.contains("vevo") || candChannel.contains("topic")) {
-      score += 18
+
+    // 1. Word-bounded song title matching & core segment exactness
+    val exactTitlePhrase = containsWholePhrase(candTitle, normTitle)
+    if (exactTitlePhrase) score += 65
+
+    val candSongSegmentRaw =
+      if (decodedTitle.contains(" - ")) decodedTitle.substringAfter(" - ") else decodedTitle
+    val candSongSegmentClean = KidsContentFilter.normalize(cleanSearchTerm(candSongSegmentRaw))
+    val candSongSegmentTokens =
+      tokenizeWords(candSongSegmentClean)
+        .filter { it !in MATCH_STOPWORDS && it !in METADATA_NOISE_WORDS }
+        .toSet()
+
+    if (candSongSegmentClean == normTitle) {
+      score += 40
+    } else if (normTitle.isNotBlank() && candSongSegmentTokens.isNotEmpty()) {
+      val extraSongWords = candSongSegmentTokens - meaningfulTitleTokens.toSet() - meaningfulArtistTokens.toSet()
+      if (extraSongWords.isNotEmpty() && meaningfulTitleTokens.size <= 2) {
+        score -= (extraSongWords.size * 22).coerceAtMost(60)
+      }
     }
-    if (candTitle.contains("slowed") || candTitle.contains("reverb") || candTitle.contains("nightcore") || candTitle.contains("8d")) {
-      score -= 40
+
+    val matchedTitleCount = meaningfulTitleTokens.count { it in candTitleTokens }
+    val titleCoverage =
+      if (meaningfulTitleTokens.isEmpty()) 0f
+      else matchedTitleCount.toFloat() / meaningfulTitleTokens.size.toFloat()
+    score += (titleCoverage * 50f).toInt()
+    if (meaningfulTitleTokens.isNotEmpty() && matchedTitleCount == 0 && !exactTitlePhrase) {
+      score -= 180
     }
-    if (candTitle.contains("karaoke") || candTitle.contains("cover") || candTitle.contains("reaction")) {
-      score -= 35
+
+    // 2. Artist verification across video title, channel name, and description
+    val exactArtistPhraseInTitle =
+      containsWholePhrase(candTitle, normArtist) ||
+        (normPrimaryArtist.isNotBlank() && containsWholePhrase(candTitle, normPrimaryArtist))
+    val exactArtistPhraseInChannel =
+      containsWholePhrase(candChannel, normArtist) ||
+        (normPrimaryArtist.isNotBlank() && containsWholePhrase(candChannel, normPrimaryArtist))
+    if (exactArtistPhraseInTitle || exactArtistPhraseInChannel) {
+      score += 55
     }
+    val combinedArtistHaystack = candTitleTokens + candChannelTokens
+    val matchedArtistCount = meaningfulArtistTokens.count { it in combinedArtistHaystack }
+    val artistInDescCount = meaningfulArtistTokens.count { it in candDescTokens }
+    val artistMatched = exactArtistPhraseInTitle || exactArtistPhraseInChannel || matchedArtistCount > 0 || artistInDescCount > 0
+
+    if (meaningfulArtistTokens.isNotEmpty()) {
+      val artistCoverage = matchedArtistCount.toFloat() / meaningfulArtistTokens.size.toFloat()
+      score += (artistCoverage * 30f).toInt()
+      if (!artistMatched) {
+        score -= 115
+      }
+    }
+
+    // 3. Official / YouTube Topic / Turkish & Global Label signals
+    val isTopicChannel =
+      (candChannel.endsWith("topic") && artistMatched) ||
+        candDesc.contains("provided to youtube by")
+    if (isTopicChannel) score += 45
+
+    val isOfficialLabel =
+      candTitle.containsAny("official music video", "official video", "official audio", "resmi video", "official lyric") ||
+        candChannel.containsAny("vevo", "netd muzik", "dmc", "poll production", "avrupa muzik", "sony music", "universal music", "warner music", "dokuz sekiz")
+    if (isOfficialLabel) {
+      score += 28
+    } else if (candTitle.contains("official") || candChannel.contains("official")) {
+      score += 14
+    }
+
+    // 4. Reject edits, covers, karaoke, shorts, mixes & unrequested live/remix variants
+    val targetNormRaw = KidsContentFilter.normalize(targetTitle)
+    val wantsLive = targetNormRaw.containsAny("live", "canli", "konser", "unplugged")
+    val wantsRemix = targetNormRaw.containsAny("remix", "mix", "mashup")
+    val wantsAcoustic = targetNormRaw.containsAny("akustik", "acoustic")
+    val wantsInstrumental = targetNormRaw.containsAny("enstrumantal", "instrumental")
+
+    if (!wantsLive && candTitle.containsAny("live", "canli", "konser", "concert", "festival", "performans")) {
+      score -= 50
+    }
+    if (!wantsRemix && candTitle.containsAny("remix", "mashup", "megamix", "bootleg", "dj set")) {
+      score -= 55
+    }
+    if (!wantsAcoustic && candTitle.containsAny("akustik", "acoustic", "unplugged")) {
+      score -= 30
+    }
+    if (!wantsInstrumental && candTitle.containsAny("enstrumantal", "instrumental", "karaoke", "backing track")) {
+      score -= 80
+    }
+
+    if (candTitle.containsAny("slowed", "reverb", "nightcore", "8d", "sped up", "speed up", "hizlandirilmis", "bass boosted")) {
+      score -= 75
+    }
+    if (candTitle.containsAny("cover", "reaction", "tepki", "inceleme", "nasil calinir", "tutorial", "akor", "parody", "parodi", "ai cover", "yapay zeka")) {
+      score -= 80
+    }
+    if (candTitle.containsAny("#shorts", "shorts", "teaser", "fragman", "tanitim", "playlist", "full album", "tum sarkilari", "best of", "top 10", "medley")) {
+      score -= 95
+    }
+
+    // 5. Duration & view-count verification when video details are available
+    val videoDurMs = parseIsoDurationMsOrNull(detail?.contentDetails?.duration)
+    if (videoDurMs != null && targetDurationMs > 30_000L) {
+      val diffMs = abs(videoDurMs - targetDurationMs)
+      score +=
+        when {
+          videoDurMs < 45_000L && targetDurationMs > 60_000L -> -160
+          videoDurMs > maxOf((targetDurationMs * 2.5).toLong(), 14L * 60_000L) -> -160
+          diffMs <= 8_000L -> 48
+          diffMs <= 20_000L -> 30
+          diffMs <= 45_000L -> 12
+          diffMs <= 90_000L -> 0
+          diffMs <= 160_000L -> -35
+          else -> -65
+        }
+    }
+
+    val viewCount = detail?.statistics?.viewCount?.toLongOrNull() ?: 0L
+    if (viewCount > 100L && matchedTitleCount > 0 && artistMatched) {
+      score += log10(viewCount.toDouble()).toInt().coerceIn(0, 12)
+    }
+
     return score
   }
 
   private companion object {
     const val TAG = "HybridMusicRepo"
     const val VIDEO_CACHE_TTL_MS = 2 * 60 * 60 * 1000L
+    const val HIGH_CONFIDENCE_MATCH_SCORE = 95
+    const val MINIMUM_CONFIDENCE_MATCH_SCORE = 25
+
+    val MATCH_STOPWORDS =
+      setOf(
+        "the", "a", "an", "and", "of", "in", "on", "at", "to", "for", "with", "feat", "ft",
+        "ve", "ile", "bir", "bu", "da", "de", "mi", "mu", "official", "video", "audio",
+        "music", "mv", "hd", "4k", "lyrics", "sarki", "sozleri"
+      )
+
+    val METADATA_NOISE_WORDS =
+      setOf(
+        "official", "video", "audio", "music", "clip", "klip", "resmi", "lyric", "lyrics",
+        "sozleri", "remastered", "remaster", "hd", "4k", "hq", "topic", "vevo", "netd", "muzik"
+      )
 
     val curatedSuggestionCatalog: List<Pair<String, String>> = listOf(
       "Müslüm Gürses" to "Arabesk & Fantezi",

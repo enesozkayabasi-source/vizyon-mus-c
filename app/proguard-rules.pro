@@ -1,25 +1,47 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# Vizyon Music R8 / ProGuard rules for Google Play Release AAB/APK builds
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Preserve annotations and line numbers for Play Console crash diagnostics
+-keepattributes SourceFile,LineNumberTable,*Annotation*,Signature,InnerClasses,EnclosingMethod
+-renamesourcefileattribute SourceFile
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# Preserve @Keep models & members (Firestore models, DTOs, helpers)
+-keep class androidx.annotation.Keep
+-keep @androidx.annotation.Keep class * { *; }
+-keepclassmembers class * {
+    @androidx.annotation.Keep *;
+}
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# Preserve WebView @JavascriptInterface methods (YouTubeIframePlayerBox)
+-keepclassmembers class * {
+    @android.webkit.JavascriptInterface <methods>;
+}
+-keepclassmembers class com.example.ui.components.** {
+    @android.webkit.JavascriptInterface <methods>;
+}
 
--keep class org.mozilla.javascript.** { *; }
--keep class org.mozilla.classfile.ClassFileWriter
--dontwarn org.mozilla.javascript.tools.**
+# Firebase Firestore POJOs & Messaging
+-keep class com.example.model.** { *; }
+-keepattributes Signature
+-keepclassmembers class * {
+    @com.google.firebase.firestore.DocumentId *;
+    @com.google.firebase.firestore.ServerTimestamp *;
+    @com.google.firebase.firestore.Exclude *;
+}
+
+# Moshi & Kotlin reflection / generated JsonAdapters
+-keepclassmembers class * {
+    @com.squareup.moshi.Json <fields>;
+}
+-keep,allowobfuscation,allowshrinking class com.squareup.moshi.** { *; }
+-keep class * extends com.squareup.moshi.JsonAdapter { *; }
+
+# Retrofit & OkHttp
+-keepattributes Exceptions
+-dontwarn okhttp3.**
+-dontwarn okio.**
+-dontwarn retrofit2.**
+
+# Kotlin Coroutines
+-keepnames class kotlinx.coroutines.internal.MainDispatcherFactory {}
+-keepnames class kotlinx.coroutines.CoroutineExceptionHandler {}
+-dontwarn kotlinx.coroutines.flow.**

@@ -1081,7 +1081,7 @@ internal fun OnboardingStep7SafetyNotificationsAndCloud(
     ConcertStageHeadline(
       kicker = "CANLI SONİK RADAR & İZİNLER",
       title = "Radar, 13+ Onay & Bildirim",
-      subtitle = "Ağ bağlantını tara, 13+ güvenlik geçidini aç ve arka plan canlı bildirimini etkinleştir.",
+      subtitle = "Ağ bağlantını tara, 13+ güvenlik geçidini aç ve anlık push bildirimlerini (FCM) etkinleştir.",
       centered = true
     )
 
@@ -1154,8 +1154,8 @@ internal fun OnboardingStep7SafetyNotificationsAndCloud(
     }
 
     MixerChannelToggleStrip(
-      title = "Arka Plan Canlı Bildirim Servisi",
-      subtitle = "Uygulama arka planda veya kapalıyken mesaj ve ses bildirimlerinin kesilmesini önler.",
+      title = "Anlık Push Bildirimleri (FCM)",
+      subtitle = "Uygulama açıkken canlı dinleyici, arka planda veya kapalıyken FCM push teslimi ile mesaj seslerinin kesilmesini önler.",
       checked = backgroundNotifServiceEnabled,
       onCheckedChange = onBackgroundNotifServiceChange,
       switchTag = "onboarding_bg_notif_switch",

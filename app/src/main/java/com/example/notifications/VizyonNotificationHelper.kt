@@ -55,9 +55,6 @@ object VizyonNotificationHelper {
   const val CHANNEL_REACTIONS = "vizyon_social_reactions_v6"
   const val CHANNEL_STORIES = "vizyon_social_stories_v6"
   const val CHANNEL_MESSAGES = "vizyon_social_messages_v6"
-  const val CHANNEL_BG_SYNC_STATUS = "vizyon_bg_sync_status_v1"
-
-  const val BG_SYNC_NOTIFICATION_ID = 9001
 
   private val LEGACY_CHANNEL_IDS = listOf(
     "vizyon_social_channel",
@@ -84,10 +81,14 @@ object VizyonNotificationHelper {
     "vizyon_social_follows_v5",
     "vizyon_social_reactions_v5",
     "vizyon_social_stories_v5",
-    "vizyon_social_messages_v5"
+    "vizyon_social_messages_v5",
+    "vizyon_bg_sync_status_v1"
   )
 
   private const val CHANNEL_GROUP_SOCIAL = "vizyon_group_social"
+  private const val MAX_MESSAGING_STYLE_HISTORY = 6
+  private const val HISTORY_PREFS_NAME = "vizyon_notif_msg_history"
+  const val MIN_SOUND_COOLDOWN_MS = 1150L
 
   const val EXTRA_NOTIF_ID = "extra_notif_id"
   const val EXTRA_NOTIF_TARGET_TYPE = "extra_notif_target_type"
@@ -96,7 +97,20 @@ object VizyonNotificationHelper {
   const val EXTRA_NOTIF_SENDER_ID = "extra_notif_sender_id"
   const val EXTRA_NOTIF_TYPE = "extra_notif_type"
 
+  private data class MessagingHistoryEntry(
+    val senderName: String,
+    val body: String,
+    val timestampMs: Long
+  )
+
   private val postMutex = Mutex()
+  private val fastPostLock = Any()
+  private val historyLock = Any()
+  private val avatarCacheLock = Any()
+  private val avatarBitmapCache = object : LinkedHashMap<String, Bitmap>(24, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?): Boolean = size > 24
+  }
+  private val senderMessageHistory = mutableMapOf<String, MutableList<MessagingHistoryEntry>>()
   @Volatile private var lastPostedWallClockMs: Long = 0L
   private val notifScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -116,16 +130,22 @@ object VizyonNotificationHelper {
     }
   }
 
-  fun ensureChannel(context: Context) {
+  fun ensureChannel(context: Context, requiredChannelId: String? = null) {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       val manager = context.getSystemService(NotificationManager::class.java) ?: return
+      if (requiredChannelId != null && manager.getNotificationChannel(requiredChannelId) != null) {
+        return
+      }
       runCatching {
         manager.createNotificationChannelGroup(
           NotificationChannelGroup(CHANNEL_GROUP_SOCIAL, "Vizyon Sosyal Topluluk")
         )
       }
-      LEGACY_CHANNEL_IDS.forEach { oldId ->
-        runCatching { manager.deleteNotificationChannel(oldId) }
+      if (!NotificationDispatchGuard.isLegacyChannelsPruned(context)) {
+        LEGACY_CHANNEL_IDS.forEach { oldId ->
+          runCatching { manager.deleteNotificationChannel(oldId) }
+        }
+        NotificationDispatchGuard.markLegacyChannelsPruned(context)
       }
       val chimeUri = customSoundUri(context)
       val audioAttrs =
@@ -189,16 +209,6 @@ object VizyonNotificationHelper {
           setSound(chimeUri, audioAttrs)
           enableVibration(true)
           setShowBadge(true)
-        },
-        NotificationChannel(
-          CHANNEL_BG_SYNC_STATUS,
-          "Arka Plan Bildirim Bağlantısı",
-          NotificationManager.IMPORTANCE_LOW
-        ).apply {
-          description = "Uygulama kapalıyken anlık mesaj ve istek bildirimlerini sessizce dinler"
-          setSound(null, null)
-          enableVibration(false)
-          setShowBadge(false)
         }
       )
       channels.forEach { ch ->
@@ -207,32 +217,6 @@ object VizyonNotificationHelper {
         }
       }
     }
-  }
-
-  fun buildForegroundSyncNotification(context: Context): Notification {
-    val appCtx = context.applicationContext
-    ensureChannel(appCtx)
-    val openIntent =
-      Intent(appCtx, MainActivity::class.java).apply {
-        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
-      }
-    val pendingIntent =
-      PendingIntent.getActivity(
-        appCtx,
-        BG_SYNC_NOTIFICATION_ID,
-        openIntent,
-        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-      )
-    return NotificationCompat.Builder(appCtx, CHANNEL_BG_SYNC_STATUS)
-      .setSmallIcon(R.drawable.ic_notif_vizyon)
-      .setContentTitle("Vizyon Music")
-      .setContentText("Anlık mesaj ve sosyal bildirim bağlantısı etkin")
-      .setOngoing(true)
-      .setSilent(true)
-      .setPriority(NotificationCompat.PRIORITY_LOW)
-      .setCategory(NotificationCompat.CATEGORY_SERVICE)
-      .setContentIntent(pendingIntent)
-      .build()
   }
 
   fun hasNotificationPermission(context: Context): Boolean {
@@ -303,18 +287,98 @@ object VizyonNotificationHelper {
   fun notificationSystemId(notificationId: String): Int =
     abs(notificationId.hashCode()).coerceAtLeast(100)
 
-  fun cancelSystemNotification(context: Context, notificationId: String) {
-    if (notificationId.isBlank()) return
-    runCatching {
-      NotificationManagerCompat.from(context.applicationContext)
-        .cancel(notificationSystemId(notificationId))
+  fun clearAllHistory(context: Context? = null) {
+    synchronized(historyLock) {
+      senderMessageHistory.clear()
+      context?.applicationContext
+        ?.getSharedPreferences(HISTORY_PREFS_NAME, Context.MODE_PRIVATE)
+        ?.edit()
+        ?.clear()
+        ?.apply()
+    }
+  }
+
+  fun channelForType(type: NotificationType): String =
+    when (type) {
+      NotificationType.FOLLOW, NotificationType.FOLLOW_REQUEST -> CHANNEL_FOLLOWS
+      NotificationType.STORY -> CHANNEL_STORIES
+      NotificationType.MESSAGE,
+      NotificationType.VOICE_MESSAGE,
+      NotificationType.MESSAGE_REQUEST -> CHANNEL_MESSAGES
+      NotificationType.LIKE, NotificationType.COMMENT, NotificationType.REPOST -> CHANNEL_REACTIONS
+    }
+
+  fun threadNotificationId(channelId: String, senderKey: String): Int =
+    notificationSystemId("thread_${channelId}_${senderKey}")
+
+  fun cancelSystemNotification(context: Context, notificationId: String, notification: UserNotification? = null) {
+    val appCtx = context.applicationContext
+    val mgr = NotificationManagerCompat.from(appCtx)
+    if (notificationId.isNotBlank()) {
+      runCatching { mgr.cancel(notificationSystemId(notificationId)) }
+    }
+    if (notification != null) {
+      val type = NotificationType.fromRaw(notification.type)
+      val channelId = channelForType(type)
+      val senderKey = notification.senderId.ifBlank { cleanDisplayNameOnly(notification.senderName) }
+      val threadKey = "${channelId}_${senderKey}"
+      synchronized(historyLock) {
+        senderMessageHistory.remove(threadKey)
+        appCtx.getSharedPreferences(HISTORY_PREFS_NAME, Context.MODE_PRIVATE)
+          .edit()
+          .remove(threadKey)
+          .apply()
+      }
+      runCatching { mgr.cancel(threadNotificationId(channelId, senderKey)) }
+    }
+  }
+
+  fun cancelNotificationsForSender(context: Context, senderId: String) {
+    if (senderId.isBlank()) return
+    val appCtx = context.applicationContext
+    val mgr = NotificationManagerCompat.from(appCtx)
+    val allChannels = listOf(CHANNEL_ID, CHANNEL_FOLLOWS, CHANNEL_REACTIONS, CHANNEL_STORIES, CHANNEL_MESSAGES)
+    val prefs = appCtx.getSharedPreferences(HISTORY_PREFS_NAME, Context.MODE_PRIVATE).edit()
+    synchronized(historyLock) {
+      allChannels.forEach { ch ->
+        val threadKey = "${ch}_${senderId}"
+        senderMessageHistory.remove(threadKey)
+        prefs.remove(threadKey)
+        runCatching { mgr.cancel(threadNotificationId(ch, senderId)) }
+      }
+      prefs.apply()
     }
   }
 
   fun cancelAllSystemNotifications(context: Context) {
+    clearAllHistory(context)
     runCatching {
       NotificationManagerCompat.from(context.applicationContext).cancelAll()
     }
+  }
+
+  fun postLocalTestNotification(context: Context): Boolean {
+    val appCtx = context.applicationContext
+    if (!hasNotificationPermission(appCtx)) return false
+    ensureChannel(appCtx)
+    val nowMs = System.currentTimeMillis()
+    val testNotif =
+      UserNotification(
+        id = "local_test_$nowMs",
+        recipientId = NotificationDispatchGuard.getLastActiveUserId(appCtx).orEmpty(),
+        senderId = "vizyon_channel_probe",
+        senderName = "Vizyon Bildirim Testi",
+        senderHandle = "@vizyon",
+        type = NotificationType.MESSAGE.name,
+        trackTitle = "Yıldızların Altında",
+        message = "Bildirim kanalı ve MessagingStyle hazır görünüyor!",
+        targetType = "CHAT",
+        targetId = "",
+        read = false,
+        createdAt = com.google.firebase.Timestamp(Date(nowMs))
+      )
+    postSocialNotification(appCtx, testNotif)
+    return true
   }
 
   fun postSocialNotification(context: Context, notification: UserNotification) {
@@ -332,12 +396,12 @@ object VizyonNotificationHelper {
     if (!hasNotificationPermission(appCtx)) return
     ensureChannel(appCtx)
 
-    // Inter-alert cooldown of 1150ms prevents Android AudioFlinger / NotificationManager
+    // Inter-alert cooldown >= 1150ms prevents Android AudioFlinger / NotificationManager
     // from throttling or muting alert sound & banners after 3 rapid consecutive notifications.
     postMutex.withLock {
       val elapsed = System.currentTimeMillis() - lastPostedWallClockMs
-      if (elapsed in 0L until 1150L) {
-        delay(1150L - elapsed)
+      if (elapsed in 0L until MIN_SOUND_COOLDOWN_MS) {
+        delay(MIN_SOUND_COOLDOWN_MS - elapsed)
       }
       postSocialNotificationInternal(appCtx, notification)
       lastPostedWallClockMs = System.currentTimeMillis()
@@ -347,13 +411,40 @@ object VizyonNotificationHelper {
   fun postSocialNotificationSync(context: Context, notification: UserNotification) {
     val appCtx = context.applicationContext
     if (!hasNotificationPermission(appCtx)) return
-    ensureChannel(appCtx)
+    ensureChannel(appCtx, channelForType(NotificationType.fromRaw(notification.type)))
     runBlocking {
       postSocialNotificationSuspend(appCtx, notification)
     }
   }
 
-  private fun postSocialNotificationInternal(appCtx: Context, notification: UserNotification) {
+  /**
+   * Non-blocking, zero-network fast path dedicated to FirebaseMessagingService.onMessageReceived
+   * and background listeners so wakeups post MessagingStyle within milliseconds.
+   */
+  fun postFcmNotificationFast(context: Context, notification: UserNotification): Boolean {
+    val appCtx = context.applicationContext
+    if (!hasNotificationPermission(appCtx)) return false
+    val channelId = channelForType(NotificationType.fromRaw(notification.type))
+    ensureChannel(appCtx, channelId)
+    return synchronized(fastPostLock) {
+      val posted =
+        postSocialNotificationInternal(
+          appCtx = appCtx,
+          notification = notification,
+          allowNetworkAvatarFetch = false
+        )
+      if (posted) {
+        lastPostedWallClockMs = System.currentTimeMillis()
+      }
+      posted
+    }
+  }
+
+  private fun postSocialNotificationInternal(
+    appCtx: Context,
+    notification: UserNotification,
+    allowNetworkAvatarFetch: Boolean = true
+  ): Boolean {
     val type = NotificationType.fromRaw(notification.type)
     val channelId =
       when (type) {
@@ -383,12 +474,16 @@ object VizyonNotificationHelper {
         }
       }
 
-    val uniqueNotifId =
-      notificationSystemId(notification.id.ifBlank { "${notification.senderId}_${System.nanoTime()}" })
+    val senderKey = notification.senderId.ifBlank { displayNameOnly }
+    val threadKey = "${channelId}_${senderKey}"
+    val threadNotifId = notificationSystemId("thread_$threadKey")
 
     val intent =
       Intent(appCtx, MainActivity::class.java).apply {
-        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        flags =
+          Intent.FLAG_ACTIVITY_NEW_TASK or
+            Intent.FLAG_ACTIVITY_SINGLE_TOP or
+            Intent.FLAG_ACTIVITY_CLEAR_TOP
         putExtra(EXTRA_NOTIF_ID, notification.id)
         putExtra(EXTRA_NOTIF_TARGET_TYPE, resolvedTargetType)
         putExtra(EXTRA_NOTIF_TARGET_ID, notification.targetId)
@@ -400,18 +495,80 @@ object VizyonNotificationHelper {
     val pendingIntent =
       PendingIntent.getActivity(
         appCtx,
-        uniqueNotifId,
+        threadNotifId,
         intent,
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
       )
 
-    // Keep avatar lightweight (64px) and NEVER use multi-bitmap RemoteViews or group bundling,
-    // which triggers Android SystemUI 1MB Binder transaction drops & auto-bundle silencing after #3.
-    val avatarBitmap = loadCircularSenderBitmap(notification.senderAvatarUrl, displayNameOnly, sizePx = 64)
+    // Keep avatar lightweight (64px) and NEVER use setGroup / setGroupSummary,
+    // which triggers Android SystemUI auto-bundle silencing after the 3rd notification.
+    val avatarBitmap =
+      loadCircularSenderBitmap(
+        avatarUrlOrData = notification.senderAvatarUrl,
+        displayName = displayNameOnly,
+        sizePx = 64,
+        allowNetworkFetch = allowNetworkAvatarFetch
+      )
     val isMessagingCategory =
       type == NotificationType.MESSAGE ||
         type == NotificationType.VOICE_MESSAGE ||
         type == NotificationType.MESSAGE_REQUEST
+
+    val msgText =
+      if (notification.trackTitle.isNotBlank()) "$cleanBody (♪ ${notification.trackTitle})"
+      else cleanBody
+
+    val accumulatedEntries =
+      synchronized(historyLock) {
+        val list = senderMessageHistory.getOrPut(threadKey) { mutableListOf() }
+        if (list.isEmpty()) {
+          restorePersistedThreadHistory(appCtx, threadKey).forEach { saved ->
+            val alreadyPresent =
+              list.any { it.timestampMs == saved.timestampMs && it.body == saved.body }
+            if (!alreadyPresent) list.add(saved)
+          }
+          restoreMessagingHistoryFromActiveNotification(appCtx, threadNotifId, displayNameOnly)
+            .forEach { restored ->
+              val alreadyPresent =
+                list.any { it.timestampMs == restored.timestampMs && it.body == restored.body }
+              if (!alreadyPresent) list.add(restored)
+            }
+        }
+        val duplicateIncoming =
+          list.any { it.timestampMs == timestampMs && it.body == msgText }
+        if (!duplicateIncoming) {
+          list.add(
+            MessagingHistoryEntry(
+              senderName = displayNameOnly,
+              body = msgText,
+              timestampMs = timestampMs
+            )
+          )
+        }
+        while (list.size > MAX_MESSAGING_STYLE_HISTORY) {
+          list.removeAt(0)
+        }
+        savePersistedThreadHistory(appCtx, threadKey, list)
+        list.toList()
+      }
+
+    val mePerson = Person.Builder().setKey("vizyon_self_me").setName("Sen").build()
+    val senderPerson =
+      Person.Builder()
+        .setKey(senderKey)
+        .setName(displayNameOnly)
+        .setIcon(IconCompat.createWithBitmap(avatarBitmap))
+        .build()
+
+    val messagingStyle =
+      NotificationCompat.MessagingStyle(mePerson)
+        .setGroupConversation(false)
+    accumulatedEntries.forEach { entry ->
+      val person =
+        if (entry.senderName == displayNameOnly) senderPerson
+        else Person.Builder().setKey(senderKey).setName(entry.senderName).build()
+      messagingStyle.addMessage(entry.body, entry.timestampMs, person)
+    }
 
     val builder =
       NotificationCompat.Builder(appCtx, channelId)
@@ -429,48 +586,111 @@ object VizyonNotificationHelper {
         )
         .setPriority(NotificationCompat.PRIORITY_HIGH)
         .setOnlyAlertOnce(false)
+        .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_ALL)
+        .setStyle(messagingStyle)
         .setWhen(timestampMs)
         .setShowWhen(true)
         .setAutoCancel(true)
         .setContentIntent(pendingIntent)
 
-    if (isMessagingCategory) {
-      val mePerson = Person.Builder().setName("Sen").build()
-      val senderPerson =
-        Person.Builder()
-          .setName(displayNameOnly)
-          .setIcon(IconCompat.createWithBitmap(avatarBitmap))
-          .build()
-      val msgText =
-        if (notification.trackTitle.isNotBlank()) "$cleanBody (♪ ${notification.trackTitle})"
-        else cleanBody
-      builder.setStyle(
-        NotificationCompat.MessagingStyle(mePerson)
-          .addMessage(msgText, timestampMs, senderPerson)
-      )
-    } else {
-      val bigText =
-        if (notification.trackTitle.isNotBlank()) "$cleanBody\n♪ ${notification.trackTitle}"
-        else cleanBody
-      builder.setStyle(
-        NotificationCompat.BigTextStyle()
-          .setBigContentTitle(displayNameOnly)
-          .bigText(bigText)
-          .setSummaryText(badgeLabel)
-      )
-    }
-
-    runCatching {
+    return runCatching {
       val manager = NotificationManagerCompat.from(appCtx)
-      manager.notify(uniqueNotifId, builder.build())
+      manager.notify(threadNotifId, builder.build())
+      true
+    }.onFailure { err ->
+      android.util.Log.e("VizyonNotificationHelper", "Failed to post system notification id=$threadNotifId", err)
+    }.getOrDefault(false)
+  }
+
+  private fun restorePersistedThreadHistory(
+    context: Context,
+    threadKey: String
+  ): List<MessagingHistoryEntry> =
+    runCatching {
+      val raw =
+        context.applicationContext
+          .getSharedPreferences(HISTORY_PREFS_NAME, Context.MODE_PRIVATE)
+          .getString(threadKey, "")
+          .orEmpty()
+      if (raw.isBlank()) return emptyList()
+      val arr = org.json.JSONArray(raw)
+      buildList {
+        for (i in 0 until arr.length()) {
+          val obj = arr.optJSONObject(i) ?: continue
+          val body = obj.optString("b", "").trim()
+          if (body.isBlank()) continue
+          val sender = obj.optString("s", "").trim().ifBlank { "Vizyon Dinleyicisi" }
+          val ts = obj.optLong("t", 0L).takeIf { it > 0L } ?: System.currentTimeMillis()
+          add(MessagingHistoryEntry(senderName = sender, body = body, timestampMs = ts))
+        }
+      }.takeLast(MAX_MESSAGING_STYLE_HISTORY)
+    }.getOrDefault(emptyList())
+
+  private fun savePersistedThreadHistory(
+    context: Context,
+    threadKey: String,
+    entries: List<MessagingHistoryEntry>
+  ) {
+    runCatching {
+      val arr = org.json.JSONArray()
+      entries.takeLast(MAX_MESSAGING_STYLE_HISTORY).forEach { e ->
+        arr.put(
+          org.json.JSONObject().apply {
+            put("s", e.senderName)
+            put("b", e.body)
+            put("t", e.timestampMs)
+          }
+        )
+      }
+      context.applicationContext
+        .getSharedPreferences(HISTORY_PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(threadKey, arr.toString())
+        .apply()
     }
+  }
+
+  private fun restoreMessagingHistoryFromActiveNotification(
+    context: Context,
+    threadNotifId: Int,
+    fallbackSenderName: String
+  ): List<MessagingHistoryEntry> {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return emptyList()
+    return runCatching {
+      val nm = context.getSystemService(NotificationManager::class.java) ?: return emptyList()
+      val active = nm.activeNotifications?.firstOrNull { it.id == threadNotifId } ?: return emptyList()
+      val extracted = NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(active.notification)
+        ?: return emptyList()
+      extracted.messages
+        .mapNotNull { msg ->
+          val body = msg.text?.toString()?.trim().orEmpty()
+          if (body.isBlank()) return@mapNotNull null
+          val sender = msg.person?.name?.toString()?.trim()?.ifBlank { null } ?: fallbackSenderName
+          MessagingHistoryEntry(
+            senderName = sender,
+            body = body,
+            timestampMs = msg.timestamp
+          )
+        }
+        .takeLast(MAX_MESSAGING_STYLE_HISTORY)
+    }.getOrDefault(emptyList())
   }
 
   private fun loadCircularSenderBitmap(
     avatarUrlOrData: String,
     displayName: String,
-    sizePx: Int = 64
+    sizePx: Int = 64,
+    allowNetworkFetch: Boolean = true
   ): Bitmap {
+    val cacheKey = avatarUrlOrData.trim()
+    if (cacheKey.isNotBlank()) {
+      synchronized(avatarCacheLock) {
+        val cached = avatarBitmapCache[cacheKey]
+        if (cached != null && !cached.isRecycled) {
+          return cached
+        }
+      }
+    }
     val rawBitmap =
       try {
         when {
@@ -483,13 +703,17 @@ object VizyonNotificationHelper {
           }
           avatarUrlOrData.startsWith("http://", ignoreCase = true) ||
             avatarUrlOrData.startsWith("https://", ignoreCase = true) -> {
-            val conn = (URL(avatarUrlOrData).openConnection() as HttpURLConnection).apply {
-              connectTimeout = 1500
-              readTimeout = 1500
-              doInput = true
+            if (!allowNetworkFetch) {
+              null
+            } else {
+              val conn = (URL(avatarUrlOrData).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 1500
+                readTimeout = 1500
+                doInput = true
+              }
+              val bytes = conn.inputStream.use { it.readBytes() }
+              decodeSampledBytes(bytes, sizePx)
             }
-            val bytes = conn.inputStream.use { it.readBytes() }
-            decodeSampledBytes(bytes, sizePx)
           }
           avatarUrlOrData.isNotBlank() -> {
             val file = File(avatarUrlOrData)
@@ -511,7 +735,13 @@ object VizyonNotificationHelper {
 
     return if (rawBitmap != null && !rawBitmap.isRecycled && rawBitmap.width > 0 && rawBitmap.height > 0) {
       try {
-        cropToCircle(rawBitmap, sizePx)
+        val circular = cropToCircle(rawBitmap, sizePx)
+        if (cacheKey.isNotBlank()) {
+          synchronized(avatarCacheLock) {
+            avatarBitmapCache[cacheKey] = circular
+          }
+        }
+        circular
       } catch (_: Throwable) {
         createMonogramAvatarBitmap(displayName, sizePx)
       }

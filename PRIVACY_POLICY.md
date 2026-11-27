@@ -22,14 +22,15 @@ Vizyon Music ("we", "our", "the App") respects your privacy and is designed with
 - You can block any user to immediately hide their profile, posts, stories, and direct messages, and you can unblock them anytime from **Hakkında & Gizlilik -> Engellenen Kullanıcılar**.
 - You can submit user/content safety reports (`USER`, `POST`, `STORY`). Report records contain the reporter UID, reported target, category, and optional note for moderation review.
 
-### 1.4 Real-Time Notifications
-- With `POST_NOTIFICATIONS` permission and your notification preference enabled, Vizyon Music listens for incoming follow requests, message requests, likes, comments, reposts, stories, and direct/voice messages so alerts appear reliably even when the app is in the background. You can disable device notifications or background live notification listening at any time in **Hakkında & Gizlilik**.
+### 1.4 Real-Time Notifications & Push Delivery (FCM)
+- With `POST_NOTIFICATIONS` permission and notifications enabled, Vizyon Music delivers alerts immediately via Cloud Firestore snapshot listeners while the app is open, and via **Firebase Cloud Messaging (FCM)** (`VizyonFirebaseMessagingService`) when the app is in the background or closed.
+- When **Anlık Push Bildirimleri (FCM)** is enabled for a signed-in user, the app stores your device FCM registration token (`fcmToken`) in your private Firestore profile. Toggling push off, signing out, or deleting your account removes this token. Vizyon Music does not run persistent foreground background services or boot receivers.
 
 ---
 
 ## 2. Third-Party Services & APIs
 Vizyon Music uses the following services strictly for core app functionality:
-- **Firebase Authentication & Cloud Firestore:** Account sign-in, cloud backup, real-time social feed, requests, direct messages, and notifications.
+- **Firebase Authentication, Cloud Firestore & Firebase Cloud Messaging (FCM):** Account sign-in, cloud backup, real-time social feed, requests, direct messages, and optional push notification delivery.
 - **YouTube Data API v3 & Official YouTube IFrame Player:** Legal music video playback inside the embedded player.
 - **iTunes Search API & LRCLIB:** Music metadata catalog and time-synced lyrics.
 

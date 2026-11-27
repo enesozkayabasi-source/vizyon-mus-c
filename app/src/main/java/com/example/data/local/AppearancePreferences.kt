@@ -21,6 +21,7 @@ import com.example.model.StoryCardTheme
 import com.example.model.TrackSource
 import com.example.model.UserProfile
 import com.example.model.sanitizeFirestoreId
+import com.example.notifications.NotificationDispatchGuard
 import com.example.security.PasscodeSecurityHelper
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -62,6 +63,7 @@ class AppearancePreferences(context: Context) {
     val NOTIFICATIONS_ENABLED = booleanPreferencesKey("notifications_enabled")
     val REQUIRE_FOLLOW_APPROVAL = booleanPreferencesKey("require_follow_approval")
     val BACKGROUND_NOTIF_SERVICE_ENABLED = booleanPreferencesKey("background_notif_service_enabled")
+    val NOTIF_PERMISSION_PROMPTED = booleanPreferencesKey("notif_permission_prompted")
     val LAST_CATALOG_REFRESH_MS = longPreferencesKey("last_catalog_refresh_ms")
     val RECENT_TRACKS_JSON = stringPreferencesKey("recent_tracks_json")
   }
@@ -100,6 +102,7 @@ class AppearancePreferences(context: Context) {
         notificationsEnabled = prefs[Keys.NOTIFICATIONS_ENABLED] ?: true,
         requireFollowApproval = prefs[Keys.REQUIRE_FOLLOW_APPROVAL] ?: false,
         backgroundNotifServiceEnabled = prefs[Keys.BACKGROUND_NOTIF_SERVICE_ENABLED] ?: true,
+        notifPermissionPrompted = prefs[Keys.NOTIF_PERMISSION_PROMPTED] ?: false,
         lastCatalogRefreshMs = prefs[Keys.LAST_CATALOG_REFRESH_MS] ?: 0L
       )
     }
@@ -190,6 +193,7 @@ class AppearancePreferences(context: Context) {
       prefs[Keys.SHARE_LISTENING_ACTIVITY] = shareActivity
       prefs[Keys.ONBOARDING_COMPLETED] = true
     }
+    NotificationDispatchGuard.setBackgroundPushEnabled(appContext, backgroundNotifServiceEnabled)
   }
 
   suspend fun updateLocalProfile(
@@ -294,6 +298,7 @@ class AppearancePreferences(context: Context) {
   }
 
   suspend fun updateNotificationsEnabled(enabled: Boolean) {
+    NotificationDispatchGuard.setNotificationsEnabled(appContext, enabled)
     dataStore.edit { it[Keys.NOTIFICATIONS_ENABLED] = enabled }
   }
 
@@ -302,7 +307,12 @@ class AppearancePreferences(context: Context) {
   }
 
   suspend fun updateBackgroundNotifServiceEnabled(enabled: Boolean) {
+    NotificationDispatchGuard.setBackgroundPushEnabled(appContext, enabled)
     dataStore.edit { it[Keys.BACKGROUND_NOTIF_SERVICE_ENABLED] = enabled }
+  }
+
+  suspend fun updateNotifPermissionPrompted(prompted: Boolean) {
+    dataStore.edit { it[Keys.NOTIF_PERMISSION_PROMPTED] = prompted }
   }
 
   suspend fun updateThemeMode(mode: AppThemeMode) {
@@ -404,6 +414,8 @@ class AppearancePreferences(context: Context) {
     dataStore.edit { prefs ->
       prefs.clear()
     }
+    NotificationDispatchGuard.setNotificationsEnabled(appContext, true)
+    NotificationDispatchGuard.setBackgroundPushEnabled(appContext, true)
   }
 
   private fun parseRecentTracksJson(raw: String): List<RecentTrackSummary> {

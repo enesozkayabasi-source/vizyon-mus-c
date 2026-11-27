@@ -128,6 +128,8 @@ fun AppearanceSettingsScreen(
   onUpdateFavoriteGenres: (List<String>) -> Unit = {},
   onOpenFollowLists: () -> Unit = {},
   onSyncCloudBackupNow: () -> Unit = {},
+  onRefreshFcmToken: () -> Unit = {},
+  onSendTestNotification: () -> Unit = {},
   onDeleteAccount: (
     bypassFreshnessPreCheck: Boolean,
     onReauthRequired: () -> Unit,
@@ -211,6 +213,7 @@ fun AppearanceSettingsScreen(
             unreadNotificationCount = unreadNotificationCount,
             bridgeStatus = bridgeStatus,
             blockedUsers = blockedUsers,
+            firebaseUid = firebaseUid,
             onBack = { activeSubPage = ProfileSubPage.OVERVIEW },
             onChatPrivacyChange = onChatPrivacyChange,
             onRequireFollowApprovalToggle = onRequireFollowApprovalToggle,
@@ -219,6 +222,8 @@ fun AppearanceSettingsScreen(
             onOpenNotifications = onOpenNotifications,
             onUnblockUser = onUnblockUser,
             onOpenDataSafety = onOpenDataSafety,
+            onRefreshFcmToken = onRefreshFcmToken,
+            onSendTestNotification = onSendTestNotification,
             onNotifyMessage = onNotifyMessage
           )
         }
@@ -567,7 +572,7 @@ private fun InstagramStyleProfileOverview(
             )
           }
 
-          // Action Row 2: Hakkında & Gizlilik + Takipçiler/Takip
+          // Action Row 2: Hakkında & Gizlilik + Topluluğum
           Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             StudioGlassButton(
               text = "Hakkında & Gizlilik",
@@ -576,7 +581,7 @@ private fun InstagramStyleProfileOverview(
               modifier = Modifier.weight(1f).testTag("open_about_privacy_btn")
             )
             StudioGlassButton(
-              text = "Bağlantılar",
+              text = "Topluluğum",
               icon = Icons.Rounded.People,
               onClick = onOpenFollowLists,
               modifier = Modifier.weight(1f).testTag("profile_open_follow_lists_btn")

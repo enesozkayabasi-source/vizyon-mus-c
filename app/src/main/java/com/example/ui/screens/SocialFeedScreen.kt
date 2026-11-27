@@ -62,6 +62,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.model.ActivityComment
 import com.example.model.ActivityFeedItem
+import com.example.model.ActivityLikeUser
 import com.example.model.ArtistSummary
 import com.example.model.DirectChatThread
 import com.example.model.FollowConnection
@@ -73,6 +74,7 @@ import com.example.model.StoryCardTheme
 import com.example.model.UiState
 import com.example.model.sanitizeFirestoreId
 import com.example.ui.components.ActivityCommentsSheet
+import com.example.ui.components.ActivityLikersModalSheet
 import com.example.ui.components.CloudSignInPromptCard
 import com.example.ui.components.DirectChatsListSection
 import com.example.ui.components.EmptySocialCard
@@ -108,6 +110,7 @@ fun SocialFeedScreen(
   storiesState: UiState<List<MusicStoryItem>> = UiState.Success(emptyList()),
   activityFeedState: UiState<List<ActivityFeedItem>>,
   activityCommentsState: UiState<List<ActivityComment>>,
+  activityLikersState: UiState<List<ActivityLikeUser>> = UiState.Success(emptyList()),
   publicListenersState: UiState<List<PublicProfile>>,
   followingState: UiState<List<FollowConnection>>,
   followersCount: Int = 0,
@@ -122,6 +125,8 @@ fun SocialFeedScreen(
   onDeleteStory: (String) -> Unit = {},
   onPlayActivityTrack: (MusicTrack) -> Unit,
   onLikeActivity: (ActivityFeedItem) -> Unit,
+  onOpenLikes: (ActivityFeedItem) -> Unit = {},
+  onCloseLikes: () -> Unit = {},
   onOpenComments: (ActivityFeedItem) -> Unit,
   onCloseComments: () -> Unit,
   onSubmitComment: (ActivityFeedItem, String) -> Unit,
@@ -147,6 +152,7 @@ fun SocialFeedScreen(
   var showFeedSearch by remember { mutableStateOf(false) }
   var selectedListenerForSheet by remember { mutableStateOf<PublicProfile?>(null) }
   var activeCommentsTarget by remember { mutableStateOf<ActivityFeedItem?>(null) }
+  var activeLikesTarget by remember { mutableStateOf<ActivityFeedItem?>(null) }
   var activeRepostTarget by remember { mutableStateOf<ActivityFeedItem?>(null) }
   var activeLongPressPost by remember { mutableStateOf<ActivityFeedItem?>(null) }
   var storyStudioInitialTrack by remember { mutableStateOf<MusicTrack?>(null) }
@@ -607,6 +613,10 @@ fun SocialFeedScreen(
                     activeCommentsTarget = event
                   },
                   onOpenRepost = { activeRepostTarget = event },
+                  onOpenLikers = {
+                    onOpenLikes(event)
+                    activeLikesTarget = event
+                  },
                   onLongPress = { activeLongPressPost = event }
                 )
               }
@@ -615,7 +625,7 @@ fun SocialFeedScreen(
         }
       }
     }
-    }
+  }
 
     // Bottom floating Instagram-style capsule tabs: Akış | Takip | Kişiler | Sohbet
     Box(
@@ -645,6 +655,34 @@ fun SocialFeedScreen(
         onCloseComments()
       },
       onSubmitComment = { text -> onSubmitComment(liveTarget, text) }
+    )
+  }
+
+  // Modal Sheet 1b: Post Likers List
+  activeLikesTarget?.let { target ->
+    val liveTarget = allFeedItems.firstOrNull { it.id == target.id } ?: target
+    ActivityLikersModalSheet(
+      activity = liveTarget,
+      likersState = activityLikersState,
+      onDismiss = {
+        activeLikesTarget = null
+        onCloseLikes()
+      },
+      onOpenListenerProfile = { liker ->
+        activeLikesTarget = null
+        onCloseLikes()
+        val matched =
+          allListeners.firstOrNull { it.userId == liker.userId }
+            ?: if (liker.userId == currentUserId || liker.userId == "local") selfPublicProfile
+            else PublicProfile(
+              id = liker.userId,
+              userId = liker.userId,
+              displayName = liker.displayName.ifBlank { "Vizyon Dinleyicisi" },
+              handle = liker.handle.ifBlank { "@vizyon" },
+              photoUrl = liker.photoUrl
+            )
+        selectedListenerForSheet = matched
+      }
     )
   }
 

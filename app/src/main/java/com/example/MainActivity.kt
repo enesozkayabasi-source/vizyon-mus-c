@@ -1,10 +1,14 @@
 package com.example
 
+import android.Manifest
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
@@ -32,9 +36,8 @@ import com.example.data.local.AppearancePreferences
 import com.example.data.local.VizyonDatabase
 import com.example.data.remote.HybridMusicRepository
 import com.example.model.AppAppearanceConfig
-import com.example.notifications.BackgroundNotificationJobService
+import com.example.notifications.VizyonFcmTokenSync
 import com.example.notifications.VizyonNotificationHelper
-import com.example.notifications.VizyonRealtimeNotificationService
 import com.example.player.YouTubeForegroundPlayerManager
 import com.example.ui.auth.attemptAutoSignIn
 import com.example.ui.components.VizyonLaunchSplash
@@ -49,8 +52,11 @@ import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.auth
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 internal fun FirebaseAuth.authStateFlow(): Flow<FirebaseUser?> = callbackFlow {
   val listener = FirebaseAuth.AuthStateListener { firebaseAuth -> trySend(firebaseAuth.currentUser) }
@@ -68,7 +74,6 @@ class MainActivity : ComponentActivity() {
       FirebaseApp.initializeApp(applicationContext)
     }
     VizyonNotificationHelper.ensureChannel(applicationContext)
-    BackgroundNotificationJobService.schedule(applicationContext)
     StudioSoundEngine.warmup(applicationContext)
     enableEdgeToEdge()
     setContent {
@@ -181,20 +186,30 @@ fun VizyonMusicAppRoot(
         activeAppearance.backgroundNotifServiceEnabled
       ) {
         if (activeAppearance.onboardingCompleted) {
-          VizyonRealtimeNotificationService.syncServiceState(
+          VizyonFcmTokenSync.syncCurrentUserToken(
             context = context,
             uid = uid,
             notificationsEnabled = activeAppearance.notificationsEnabled,
-            backgroundNotifServiceEnabled = activeAppearance.backgroundNotifServiceEnabled
+            fcmPushEnabled = activeAppearance.backgroundNotifServiceEnabled
           )
         }
       }
 
-      LaunchedEffect(launchIntent, mainViewModel) {
-        if (launchIntent != null) {
-          mainViewModel.handleNotificationIntent(launchIntent)
-          onLaunchIntentConsumed()
+      LaunchedEffect(launchIntent, mainViewModel, uid) {
+        val intentToHandle = launchIntent ?: return@LaunchedEffect
+        val hasNotifExtras =
+          !intentToHandle.getStringExtra(VizyonNotificationHelper.EXTRA_NOTIF_ID).isNullOrBlank() ||
+            !intentToHandle.getStringExtra(VizyonNotificationHelper.EXTRA_NOTIF_TARGET_TYPE).isNullOrBlank() ||
+            !intentToHandle.getStringExtra("notificationId").isNullOrBlank() ||
+            !intentToHandle.getStringExtra("targetType").isNullOrBlank() ||
+            !intentToHandle.getStringExtra("targetId").isNullOrBlank() ||
+            !intentToHandle.getStringExtra("senderId").isNullOrBlank() ||
+            !intentToHandle.getStringExtra("type").isNullOrBlank()
+        if (hasNotifExtras && uid == null) {
+          return@LaunchedEffect
         }
+        mainViewModel.handleNotificationIntent(intentToHandle)
+        onLaunchIntentConsumed()
       }
 
       val rootRoute =
@@ -202,6 +217,41 @@ fun VizyonMusicAppRoot(
           null -> AppRootRoute.SPLASH
           else -> if (!loaded.onboardingCompleted) AppRootRoute.ONBOARDING else AppRootRoute.MAIN
         }
+
+      val notifPermissionLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+          startupScope.launch {
+            appearancePrefs.updateNotifPermissionPrompted(true)
+            VizyonNotificationHelper.ensureChannel(context.applicationContext)
+            if (granted) {
+              VizyonFcmTokenSync.syncCurrentUserToken(
+                context = context,
+                uid = uid,
+                notificationsEnabled = activeAppearance.notificationsEnabled,
+                fcmPushEnabled = activeAppearance.backgroundNotifServiceEnabled
+              )
+            }
+          }
+        }
+
+      LaunchedEffect(
+        rootRoute,
+        appearanceOrNull?.notifPermissionPrompted,
+        lifecycleOwner
+      ) {
+        val loaded = appearanceOrNull ?: return@LaunchedEffect
+        if (rootRoute == AppRootRoute.MAIN &&
+          Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+          !loaded.notifPermissionPrompted &&
+          !VizyonNotificationHelper.hasNotificationPermission(context)
+        ) {
+          lifecycleOwner.lifecycle.currentStateFlow.first { it.isAtLeast(Lifecycle.State.RESUMED) }
+          delay(250L)
+          if (!VizyonNotificationHelper.hasNotificationPermission(context)) {
+            notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+          }
+        }
+      }
 
       Crossfade(
         targetState = rootRoute,

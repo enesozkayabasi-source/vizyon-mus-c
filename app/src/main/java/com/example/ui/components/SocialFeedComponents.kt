@@ -563,6 +563,7 @@ fun RichActivityPostCard(
   onLike: () -> Unit,
   onOpenComments: () -> Unit,
   onOpenRepost: () -> Unit,
+  onOpenLikers: () -> Unit = {},
   onLongPress: () -> Unit = {}
 ) {
   val actionType = ActivityActionType.fromRaw(event.actionType)
@@ -773,6 +774,7 @@ fun RichActivityPostCard(
           highlighted = likedByMe,
           tint = MaterialTheme.colorScheme.primary,
           onClick = onLike,
+          onLongClick = onOpenLikers,
           modifier = Modifier.weight(1f).testTag("like_activity_btn_${event.id}")
         )
         SocialActionPill(
@@ -796,6 +798,7 @@ fun RichActivityPostCard(
   }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SocialActionPill(
   icon: ImageVector,
@@ -803,9 +806,11 @@ private fun SocialActionPill(
   highlighted: Boolean,
   tint: Color,
   onClick: () -> Unit,
+  onLongClick: (() -> Unit)? = null,
   modifier: Modifier = Modifier
 ) {
   val interactionSource = remember { MutableInteractionSource() }
+  val haptics = LocalHapticFeedback.current
   val scale = rememberPressScale(interactionSource)
   val shape = RoundedCornerShape(999.dp)
   val bgColor by animateColorAsState(
@@ -831,10 +836,17 @@ private fun SocialActionPill(
         .clip(shape)
         .background(bgColor)
         .border(1.dp, borderColor, shape)
-        .clickable(
+        .combinedClickable(
           interactionSource = interactionSource,
           indication = null,
-          onClick = onClick
+          onClick = onClick,
+          onLongClick =
+            onLongClick?.let { longAction ->
+              {
+                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                longAction()
+              }
+            }
         )
         .padding(horizontal = 8.dp, vertical = 10.dp)
   ) {

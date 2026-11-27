@@ -2,6 +2,7 @@ package com.example.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material3.CircularProgressIndicator
@@ -52,6 +55,7 @@ import coil.compose.AsyncImage
 import com.example.R
 import com.example.model.ActivityComment
 import com.example.model.ActivityFeedItem
+import com.example.model.ActivityLikeUser
 import com.example.model.UiState
 import com.example.model.formatRelativeTimeTr
 
@@ -332,6 +336,161 @@ fun RepostQuoteSheet(
           onClick = { onConfirmRepost(quoteNote) },
           modifier = Modifier.weight(1.4f).testTag("confirm_repost_btn")
         )
+      }
+    }
+  }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ActivityLikersModalSheet(
+  activity: ActivityFeedItem,
+  likersState: UiState<List<ActivityLikeUser>>,
+  onDismiss: () -> Unit,
+  onOpenListenerProfile: (ActivityLikeUser) -> Unit
+) {
+  val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+  ModalBottomSheet(
+    onDismissRequest = onDismiss,
+    sheetState = sheetState,
+    containerColor = MaterialTheme.colorScheme.surface,
+    modifier = Modifier.testTag("activity_likers_sheet")
+  ) {
+    Column(
+      modifier =
+        Modifier.fillMaxWidth()
+          .heightIn(min = 320.dp, max = 540.dp)
+          .navigationBarsPadding()
+          .padding(horizontal = 18.dp, vertical = 8.dp),
+      verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+        modifier = Modifier.fillMaxWidth()
+      ) {
+        Row(
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          modifier = Modifier.weight(1f)
+        ) {
+          Icon(
+            imageVector = Icons.Rounded.Favorite,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.primary
+          )
+          Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+              text = "Beğenenler (${activity.likesCount})",
+              style = MaterialTheme.typography.headlineSmall,
+              fontWeight = FontWeight.Bold
+            )
+            Text(
+              text = "${activity.userName} • ♪ ${activity.trackTitle}",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.primary,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
+        }
+        StudioCircleIconButton(
+          icon = Icons.Rounded.Close,
+          contentDescription = "Beğenenler listesini kapat",
+          onClick = onDismiss,
+          size = 48.dp,
+          modifier = Modifier.testTag("close_likers_sheet_btn")
+        )
+      }
+
+      when (likersState) {
+        is UiState.Loading -> {
+          Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxWidth().weight(1f)) {
+            CircularProgressIndicator(modifier = Modifier.size(28.dp))
+          }
+        }
+        is UiState.Error -> {
+          Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxWidth().weight(1f)) {
+            Text(likersState.message, color = MaterialTheme.colorScheme.error)
+          }
+        }
+        is UiState.Success -> {
+          val likers = likersState.data
+          if (likers.isEmpty()) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxWidth().weight(1f)) {
+              Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(20.dp)
+              ) {
+                Icon(
+                  imageVector = Icons.Rounded.Favorite,
+                  contentDescription = null,
+                  tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.72f),
+                  modifier = Modifier.size(40.dp)
+                )
+                Text(
+                  text = "Henüz beğenen yok",
+                  style = MaterialTheme.typography.titleMedium,
+                  fontWeight = FontWeight.Bold
+                )
+                Text(
+                  text = "İlk beğeniyi bırakarak bu paylaşımı destekleyebilirsin.",
+                  style = MaterialTheme.typography.bodySmall,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  textAlign = TextAlign.Center
+                )
+              }
+            }
+          } else {
+            LazyColumn(
+              contentPadding = PaddingValues(bottom = 16.dp),
+              verticalArrangement = Arrangement.spacedBy(10.dp),
+              modifier = Modifier.fillMaxWidth().weight(1f)
+            ) {
+              items(likers, key = { it.userId.ifBlank { it.id } }) { liker ->
+                val uid = liker.userId.ifBlank { liker.id }
+                GlassStudioCard(
+                  cornerRadius = 16.dp,
+                  modifier =
+                    Modifier.fillMaxWidth()
+                      .clip(RoundedCornerShape(16.dp))
+                      .clickable { onOpenListenerProfile(liker) }
+                      .testTag("activity_liker_item_$uid")
+                ) {
+                  Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxWidth().padding(12.dp)
+                  ) {
+                    StudioAvatar(
+                      photoUrlOrPath = liker.photoUrl,
+                      contentDescription = liker.displayName,
+                      size = 42.dp
+                    )
+                    Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                      Text(
+                        text = liker.displayName.ifBlank { "Vizyon Dinleyicisi" },
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                      )
+                      Text(
+                        text = "${liker.handle.ifBlank { "@vizyon" }} • ${formatRelativeTimeTr(liker.createdAt)}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                      )
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
   }

@@ -427,11 +427,14 @@ fun RequestsModalSheet(
 @Composable
 fun ReportUserDialog(
   targetDisplayName: String,
+  isAlreadyBlocked: Boolean = false,
   onDismiss: () -> Unit,
-  onSubmitReport: (ReportReason, String) -> Unit
+  onSubmitReport: (ReportReason, String) -> Unit,
+  onBlockAfterReport: (() -> Unit)? = null
 ) {
   var selectedReason by remember { mutableStateOf(ReportReason.SPAM) }
   var details by remember { mutableStateOf("") }
+  var reportSubmitted by remember { mutableStateOf(false) }
 
   Dialog(
     onDismissRequest = onDismiss,
@@ -453,80 +456,133 @@ fun ReportUserDialog(
           verticalArrangement = Arrangement.spacedBy(12.dp),
           modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(20.dp)
         ) {
-          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Icon(Icons.Rounded.Flag, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+          if (!reportSubmitted) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+              Icon(Icons.Rounded.Flag, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+              Text(
+                text = "${targetDisplayName.ifBlank { "Kullanıcıyı" }} Şikayet Et",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+              )
+            }
             Text(
-              text = "${targetDisplayName.ifBlank { "Kullanıcıyı" }} Şikayet Et",
-              style = MaterialTheme.typography.titleLarge,
-              fontWeight = FontWeight.Bold
+              text = "Topluluk güvenliği için şikayet nedenini seç. Bildirimlerin gizli tutulur.",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-          }
-          Text(
-            text = "Topluluk güvenliği için şikayet nedenini seç. Bildirimlerin gizli tutulur.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-          )
-          Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            ReportReason.entries.chunked(2).forEach { rowReasons ->
-              Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                rowReasons.forEach { reason ->
-                  val selected = selectedReason == reason
-                  Surface(
-                    color =
-                      if (selected) MaterialTheme.colorScheme.error.copy(alpha = 0.22f)
-                      else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-                    shape = RoundedCornerShape(14.dp),
-                    modifier =
-                      Modifier.weight(1f)
-                        .defaultMinSize(minHeight = 48.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .border(
-                          width = 1.dp,
-                          color =
-                            if (selected) MaterialTheme.colorScheme.error
-                            else MaterialTheme.colorScheme.outline.copy(alpha = 0.28f),
-                          shape = RoundedCornerShape(14.dp)
-                        )
-                        .clickable { selectedReason = reason }
-                        .testTag("report_reason_${reason.name}")
-                  ) {
-                    Box(
-                      contentAlignment = Alignment.Center,
-                      modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+              ReportReason.entries.chunked(2).forEach { rowReasons ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                  rowReasons.forEach { reason ->
+                    val selected = selectedReason == reason
+                    Surface(
+                      color =
+                        if (selected) MaterialTheme.colorScheme.error.copy(alpha = 0.22f)
+                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                      shape = RoundedCornerShape(14.dp),
+                      modifier =
+                        Modifier.weight(1f)
+                          .defaultMinSize(minHeight = 48.dp)
+                          .clip(RoundedCornerShape(14.dp))
+                          .border(
+                            width = 1.dp,
+                            color =
+                              if (selected) MaterialTheme.colorScheme.error
+                              else MaterialTheme.colorScheme.outline.copy(alpha = 0.28f),
+                            shape = RoundedCornerShape(14.dp)
+                          )
+                          .clickable { selectedReason = reason }
+                          .testTag("report_reason_${reason.name}")
                     ) {
-                      Text(
-                        text = reason.label,
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                        color = if (selected) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                      )
+                      Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp)
+                      ) {
+                        Text(
+                          text = reason.label,
+                          style = MaterialTheme.typography.labelMedium,
+                          fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                          color = if (selected) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                          maxLines = 1,
+                          overflow = TextOverflow.Ellipsis
+                        )
+                      }
                     }
                   }
                 }
               }
             }
-          }
-          OutlinedTextField(
-            value = details,
-            onValueChange = { if (it.length <= 240) details = it },
-            label = { Text("Ek açıklama (isteğe bağlı)") },
-            singleLine = true,
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier.fillMaxWidth().testTag("report_details_input")
-          )
-          Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
-            TextButton(onClick = onDismiss, modifier = Modifier.defaultMinSize(minHeight = 48.dp)) {
-              Text("Vazgeç")
+            OutlinedTextField(
+              value = details,
+              onValueChange = { if (it.length <= 240) details = it },
+              label = { Text("Ek açıklama (isteğe bağlı)") },
+              singleLine = true,
+              shape = RoundedCornerShape(14.dp),
+              modifier = Modifier.fillMaxWidth().testTag("report_details_input")
+            )
+            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+              TextButton(onClick = onDismiss, modifier = Modifier.defaultMinSize(minHeight = 48.dp)) {
+                Text("Vazgeç")
+              }
+              Spacer(modifier = Modifier.width(8.dp))
+              Button(
+                onClick = {
+                  onSubmitReport(selectedReason, details.trim())
+                  reportSubmitted = true
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                modifier = Modifier.defaultMinSize(minHeight = 48.dp).testTag("submit_report_btn")
+              ) {
+                Text("Şikayet Gönder", color = Color.White, fontWeight = FontWeight.Bold)
+              }
             }
-            Spacer(modifier = Modifier.width(8.dp))
-            Button(
-              onClick = { onSubmitReport(selectedReason, details.trim()) },
-              colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-              modifier = Modifier.defaultMinSize(minHeight = 48.dp).testTag("submit_report_btn")
+          } else {
+            val safeTargetName = targetDisplayName.ifBlank { "Bu kullanıcı" }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+              Icon(Icons.Rounded.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+              Text(
+                text = "Şikayetin Alındı",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold
+              )
+            }
+            Text(
+              text =
+                if (!isAlreadyBlocked && onBlockAfterReport != null)
+                  "$safeTargetName hakkındaki bildirimin incelemeye alındı. İstersen bu kullanıcıyı hemen engelleyerek sana mesaj veya bildirim göndermesini kapatabilirsin."
+                else
+                  "$safeTargetName hakkındaki bildirimin incelemeye alındı. Teşekkür ederiz.",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+              modifier = Modifier.fillMaxWidth().testTag("report_post_actions_row")
             ) {
-              Text("Şikayet Gönder", color = Color.White, fontWeight = FontWeight.Bold)
+              OutlinedButton(
+                onClick = onDismiss,
+                modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp).testTag("report_post_close_btn")
+              ) {
+                Text(
+                  text = if (!isAlreadyBlocked && onBlockAfterReport != null) "Engellemeden Kapat" else "Kapat",
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis
+                )
+              }
+              if (!isAlreadyBlocked && onBlockAfterReport != null) {
+                Button(
+                  onClick = {
+                    onBlockAfterReport()
+                    onDismiss()
+                  },
+                  colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                  modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp).testTag("report_post_block_btn")
+                ) {
+                  Icon(Icons.Rounded.Block, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+                  Spacer(modifier = Modifier.width(6.dp))
+                  Text("Kullanıcıyı Engelle", color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+              }
             }
           }
         }
@@ -659,7 +715,13 @@ fun DataSafetyModalSheet(onDismiss: () -> Unit) {
       }
       item {
         DataSafetySectionCard(
-          title = "5. Veri Silme, Engelleme & Şikayet Hakkı",
+          title = "5. Anlık Bildirimler (Firestore & FCM)",
+          body = "Uygulama açıkken sosyal ve sohbet bildirimleri Firestore anlık dinleyicisi ile iletilir. Uygulama arka plandayken veya kapalıyken isteğe bağlı Anlık Push Bildirimleri (FCM) için cihaz bildirim anahtarı (fcmToken) şifreli olarak saklanır; çıkış yaptığında veya kapattığında temizlenir. Kalıcı arka plan veri senkronizasyon servisi kullanılmaz."
+        )
+      }
+      item {
+        DataSafetySectionCard(
+          title = "6. Veri Silme, Engelleme & Şikayet Hakkı",
           body = "Diğer kullanıcıları engelleyebilir veya şikayet edebilirsin. Profil Ayarları altındaki Hesabı Kalıcı Sil duvarı üzerinden tüm verilerini ve bulut kaydını tek dokunuşla kalıcı olarak silebilirsin. Reklam SDK'sı veya üçüncü taraf izleyici yoktur."
         )
       }

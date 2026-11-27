@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: vizyon-music-fcm-worker
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: FIREBASE_PROJECT_ID
+        value: gen-lang-client-0103909720
+      - key: FIRESTORE_DATABASE_ID
+        value: ai-studio-android-vizyonmu-95f9d1d0-40a5-423e-9c63-5985bfe0fd3c
+      - key: SUPPORT_EMAIL
+        value: enesozkayabasi@gmail.com
+      - key: FIREBASE_SERVICE_ACCOUNT_JSON
+        sync: false

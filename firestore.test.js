@@ -99,6 +99,24 @@ test("User profile supports vault passcode backup, data-url avatar, and enforces
     })
   );
 
+  // Owner can sync FCM push token and toggle push status
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).update({
+      fcmToken: "fcm_sample_token_alice_001",
+      fcmPushEnabled: true,
+      fcmUpdatedAtMillis: Date.now(),
+      updatedAt: new Date(Date.now() - 500),
+    })
+  );
+  await assertFails(
+    bobDb.collection("users").doc(ALICE_UID).update({
+      fcmToken: "spoofed_token",
+      fcmPushEnabled: false,
+      fcmUpdatedAtMillis: Date.now(),
+      updatedAt: new Date(Date.now() - 500),
+    })
+  );
+
   // Favorites create + list + @DocumentId 'id' rejection
   await assertSucceeds(
     aliceDb.collection("users").doc(ALICE_UID).collection("favorites").doc("yt_abc123").set({
@@ -287,9 +305,37 @@ test("Public profiles, data-URL avatars, bi-directional following/followers, and
   await assertFails(bobDb.collection("activity_feed").get());
 
   await assertSucceeds(
+    bobDb.collection("activity_feed").doc("act_1").collection("likes").doc(BOB_UID).set({
+      userId: BOB_UID,
+      displayName: "Bob",
+      handle: "@bob",
+      photoUrl: SAMPLE_AVATAR_DATA_URL,
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+  await assertSucceeds(
     bobDb.collection("activity_feed").doc("act_1").update({
       likesCount: 1,
       updatedAt: new Date(Date.now() - 1000),
+    })
+  );
+  await assertSucceeds(aliceDb.collection("activity_feed").doc("act_1").collection("likes").get());
+  await assertSucceeds(bobDb.collection("activity_feed").doc("act_1").collection("likes").doc(BOB_UID).delete());
+  await assertSucceeds(
+    bobDb.collection("activity_feed").doc("act_1").update({
+      likesCount: 0,
+      updatedAt: new Date(Date.now() - 500),
+    })
+  );
+  // Charlie cannot spoof a like doc as Bob
+  await assertFails(
+    charlieDb.collection("activity_feed").doc("act_1").collection("likes").doc(BOB_UID).set({
+      userId: BOB_UID,
+      displayName: "Spoof",
+      handle: "@spoof",
+      createdAt: ts,
+      updatedAt: ts,
     })
   );
   await assertFails(
@@ -306,6 +352,12 @@ test("Direct messages (/chats and /messages) and MESSAGE notifications enforce p
   const charlieDb = testEnv.authenticatedContext(CHARLIE_UID).firestore();
   const ts = new Date(Date.now() - 2000);
   const chatId = "dm_alice_123__bob_456";
+
+  // Opening a brand-new chat thread before parent chat document exists must succeed for listener query
+  await assertSucceeds(
+    aliceDb.collection("chats").doc(chatId).collection("messages")
+      .where("participantIds", "array-contains", ALICE_UID).get()
+  );
 
   // Alice starts DM thread with Bob
   await assertSucceeds(
@@ -650,4 +702,106 @@ test("Blocking, user reporting, follow/message requests, voice messages, and dis
     })
   );
 });
+
+test("Mutual blocking rejects chats, messages, requests, and notifications while allowing single-doc self check", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+  const charlieDb = testEnv.authenticatedContext(CHARLIE_UID).firestore();
+  const ts = new Date(Date.now() - 2000);
+  const chatId = "dm_alice_123__bob_456";
+
+  // Alice creates chat before blocking
+  await assertSucceeds(
+    aliceDb.collection("chats").doc(chatId).set({
+      chatId,
+      participantIds: [ALICE_UID, BOB_UID],
+      lastMessageText: "Merhaba",
+      lastSenderId: ALICE_UID,
+      lastMessageAtMillis: Date.now() - 1000,
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+
+  // Alice blocks Bob
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).collection("blocked_users").doc(BOB_UID).set({
+      blockedUserId: BOB_UID,
+      displayName: "Bob",
+      handle: "@bob",
+      photoUrl: "",
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+
+  // Bob can check his own block status doc against Alice, but cannot list or inspect others
+  await assertSucceeds(bobDb.collection("users").doc(ALICE_UID).collection("blocked_users").doc(BOB_UID).get());
+  await assertFails(bobDb.collection("users").doc(ALICE_UID).collection("blocked_users").get());
+  await assertFails(charlieDb.collection("users").doc(ALICE_UID).collection("blocked_users").doc(BOB_UID).get());
+
+  // Blocked Bob cannot update chat, send message, send message request, or write notification to Alice
+  await assertFails(
+    bobDb.collection("chats").doc(chatId).update({
+      lastMessageText: "Engellendim mi?",
+      lastSenderId: BOB_UID,
+      lastMessageAtMillis: Date.now(),
+      updatedAt: new Date(Date.now() - 500),
+    })
+  );
+  await assertFails(
+    bobDb.collection("chats").doc(chatId).collection("messages").doc("msg_blocked").set({
+      chatId,
+      participantIds: [ALICE_UID, BOB_UID],
+      senderId: BOB_UID,
+      senderName: "Bob",
+      senderHandle: "@bob",
+      text: "Engelli mesaj",
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+  await assertFails(
+    bobDb.collection("users").doc(ALICE_UID).collection("notifications").doc("notif_blocked").set({
+      recipientId: ALICE_UID,
+      senderId: BOB_UID,
+      senderName: "Bob",
+      senderHandle: "@bob",
+      type: "MESSAGE",
+      message: "Düşmemesi gereken bildirim",
+      read: false,
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+  await assertFails(
+    bobDb.collection("users").doc(ALICE_UID).collection("message_requests").doc(BOB_UID).set({
+      requesterId: BOB_UID,
+      requesterName: "Bob",
+      requesterHandle: "@bob",
+      recipientId: ALICE_UID,
+      previewText: "İstek denemesi",
+      messageType: "TEXT",
+      status: "PENDING",
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+
+  // Unblocking Bob restores messaging
+  await assertSucceeds(aliceDb.collection("users").doc(ALICE_UID).collection("blocked_users").doc(BOB_UID).delete());
+  await assertSucceeds(
+    bobDb.collection("chats").doc(chatId).collection("messages").doc("msg_unblocked").set({
+      chatId,
+      participantIds: [ALICE_UID, BOB_UID],
+      senderId: BOB_UID,
+      senderName: "Bob",
+      senderHandle: "@bob",
+      text: "Engel kalktı!",
+      createdAt: ts,
+      updatedAt: ts,
+    })
+  );
+});
+
 

@@ -19,6 +19,7 @@ import com.example.data.local.LocalFavoriteEntity
 import com.example.data.local.LocalFollowedArtistEntity
 import com.example.data.local.LocalFollowingEntity
 import com.example.data.local.LocalLibraryDao
+import com.example.data.local.LocalNotificationEntity
 import com.example.data.local.LocalPlaylistEntity
 import com.example.data.local.LocalPlaylistTrackEntity
 import com.example.data.local.LocalStoryEntity
@@ -28,6 +29,7 @@ import com.example.model.AccentPalette
 import com.example.model.ActivityActionType
 import com.example.model.ActivityComment
 import com.example.model.ActivityFeedItem
+import com.example.model.ActivityLikeUser
 import com.example.model.ApiBridgeStatus
 import com.example.model.AppAppearanceConfig
 import com.example.model.AppLanguage
@@ -64,10 +66,9 @@ import com.example.model.UserNotification
 import com.example.model.UserProfile
 import com.example.model.buildDirectChatId
 import com.example.model.sanitizeFirestoreId
-import com.example.notifications.BackgroundNotificationJobService
 import com.example.notifications.NotificationDispatchGuard
+import com.example.notifications.VizyonFcmTokenSync
 import com.example.notifications.VizyonNotificationHelper
-import com.example.notifications.VizyonRealtimeNotificationService
 import com.example.player.PlaybackUiState
 import com.example.player.YouTubeForegroundPlayerManager
 import com.example.ui.auth.isRecentLoginFresh
@@ -95,6 +96,7 @@ import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import com.google.firebase.Timestamp
 import java.util.UUID
 
 sealed interface NotificationDeepLinkTarget {
@@ -155,7 +157,7 @@ class VizyonMainViewModel(
   val appearanceState: StateFlow<AppAppearanceConfig> =
     appearancePrefs.configFlow.stateIn(
       scope = viewModelScope,
-      started = SharingStarted.WhileSubscribed(5000L),
+      started = SharingStarted.Eagerly,
       initialValue = AppAppearanceConfig()
     )
 
@@ -200,11 +202,13 @@ class VizyonMainViewModel(
   val pendingDeepLink: StateFlow<NotificationDeepLinkTarget?> = _pendingDeepLink.asStateFlow()
 
   private val _selectedCommentActivityId = MutableStateFlow<String?>(null)
+  private val _selectedLikesActivityId = MutableStateFlow<String?>(null)
   private val _likedActivityIdsInSession = MutableStateFlow<Set<String>>(emptySet())
   val likedActivityIdsInSession: StateFlow<Set<String>> = _likedActivityIdsInSession.asStateFlow()
 
   private val _activeChatPeer = MutableStateFlow<PublicProfile?>(null)
   val activeChatPeer: StateFlow<PublicProfile?> = _activeChatPeer.asStateFlow()
+  private val _optimisticChatMessages = MutableStateFlow<List<DirectChatMessage>>(emptyList())
 
   private val _inspectedFollowUserId = MutableStateFlow<String?>(null)
   val inspectedFollowUserId: StateFlow<String?> = _inspectedFollowUserId.asStateFlow()
@@ -224,11 +228,16 @@ class VizyonMainViewModel(
   private var lastLyricsTrackId: String? = null
   private var resolveVideoJob: Job? = null
   private var autocompleteJob: Job? = null
+  private var searchJob: Job? = null
   private var catalogSeedCounter: Long = 0L
   private var inMemoryBaselineReady: Boolean = false
   private val inMemorySeenNotificationIds = mutableSetOf<String>()
+  private var lastAutoTokenHealAtMs: Long = 0L
   private var openChatBaselinePeerId: String? = null
   private val seenOpenChatMessageIds = mutableSetOf<String>()
+  private val hydratedLikeCheckIds = mutableSetOf<String>()
+  private val excludedVideoIdsPerTrack = mutableMapOf<String, MutableSet<String>>()
+  private val autoFallbackAttemptsPerTrack = mutableMapOf<String, Int>()
 
   val selfRecentTracksState: StateFlow<List<RecentTrackSummary>> =
     appearancePrefs.recentTracksFlow.stateIn(
@@ -300,8 +309,8 @@ class VizyonMainViewModel(
       combine(
         firestoreRepo.observePublicListeners(currentUserId),
         blockedIdSetFlow
-      ) { list, blockedIds ->
-        list.filterNot { profile ->
+      ) { listeners, blockedIds ->
+        listeners.filterNot { profile ->
           val raw = profile.userId.ifBlank { profile.id }
           raw.isNotBlank() && sanitizeFirestoreId(raw) in blockedIds
         }
@@ -366,7 +375,7 @@ class VizyonMainViewModel(
           initialValue = emptySet()
         )
     } else {
-      MutableStateFlow(emptySet())
+      MutableStateFlow<Set<String>>(emptySet()).asStateFlow()
     }
 
   val pendingRequestsCount: StateFlow<Int> =
@@ -422,28 +431,30 @@ class VizyonMainViewModel(
         localLibraryDao.observeAllDirectMessages(),
         blockedIdSetFlow
       ) { msgs, blockedIds ->
-        msgs.filterNot { it.peerId.isNotBlank() && sanitizeFirestoreId(it.peerId) in blockedIds }
-          .groupBy { it.chatId }.mapNotNull { (chatId, list) ->
-            val latest = list.maxByOrNull { it.createdAtMs } ?: return@mapNotNull null
-            DirectChatThread(
-              id = chatId,
-              chatId = chatId,
-              participantIds = listOf("local", latest.peerId),
-              participantNames = mapOf("local" to "Sen", latest.peerId to latest.peerName),
-              participantHandles = mapOf("local" to "@vizyon", latest.peerId to latest.peerHandle),
-              participantAvatars = mapOf("local" to "", latest.peerId to latest.peerAvatarUrl),
-              lastMessageText = latest.text,
-              lastSenderId = latest.senderId,
-              lastTrackTitle = latest.trackTitle,
-              lastMessageAtMillis = latest.createdAtMs
-            )
-          }.sortedByDescending { it.lastMessageAtMillis }
+        msgs.groupBy { it.chatId }.mapNotNull { (chatId, list) ->
+          val latest = list.maxByOrNull { it.createdAtMs } ?: return@mapNotNull null
+          if (latest.peerId.isNotBlank() && sanitizeFirestoreId(latest.peerId) in blockedIds) {
+            return@mapNotNull null
+          }
+          DirectChatThread(
+            id = chatId,
+            chatId = chatId,
+            participantIds = listOf("local", latest.peerId),
+            participantNames = mapOf("local" to "Sen", latest.peerId to latest.peerName),
+            participantHandles = mapOf("local" to "@vizyon", latest.peerId to latest.peerHandle),
+            participantAvatars = mapOf("local" to "", latest.peerId to latest.peerAvatarUrl),
+            lastMessageText = latest.text,
+            lastSenderId = latest.senderId,
+            lastTrackTitle = latest.trackTitle,
+            lastMessageAtMillis = latest.createdAtMs
+          )
+        }
       }.asSafeUiState("localDirectChats")
     }
 
   val activeChatMessagesState: StateFlow<UiState<List<DirectChatMessage>>> =
-    _activeChatPeer
-      .flatMapLatest { peer ->
+    combine(
+      _activeChatPeer.flatMapLatest { peer ->
         val rawPeerId = peer?.userId?.ifBlank { peer.id }.orEmpty()
         if (peer == null || rawPeerId.isBlank()) {
           flowOf(emptyList())
@@ -458,8 +469,21 @@ class VizyonMainViewModel(
               .map { list -> list.map { it.toDirectChatMessage() } }
           }
         }
+      },
+      _optimisticChatMessages,
+      _activeChatPeer
+    ) { confirmed, optimistic, peer ->
+      val rawPeerId = peer?.userId?.ifBlank { peer.id }.orEmpty()
+      if (peer == null || rawPeerId.isBlank()) {
+        emptyList()
+      } else {
+        val selfUid = currentUserId ?: "local"
+        val chatId = buildDirectChatId(selfUid, sanitizeFirestoreId(rawPeerId))
+        val confirmedIds = confirmed.map { it.id }.toSet()
+        val pendingForChat = optimistic.filter { it.chatId == chatId && it.id !in confirmedIds }
+        (confirmed + pendingForChat).sortedBy { it.createdAt?.toDate()?.time ?: 0L }
       }
-      .asSafeUiState("activeChatMessages")
+    }.asSafeUiState("activeChatMessages")
 
   val followedArtistsState: StateFlow<UiState<List<FollowedArtist>>> =
     if (!currentUserId.isNullOrBlank()) {
@@ -483,12 +507,14 @@ class VizyonMainViewModel(
         }
       }.asSafeUiState("activityFeed")
     } else {
-      localLibraryDao.observeActivityFeed()
-        .map { list ->
-          list.filterNot { it.actionType == ActivityActionType.LISTENING.name }
-            .map { it.toActivityFeedItem() }
-        }
-        .asSafeUiState("localActivityFeed")
+      combine(
+        localLibraryDao.observeActivityFeed(),
+        blockedIdSetFlow
+      ) { list, blockedIds ->
+        list.filterNot { it.actionType == ActivityActionType.LISTENING.name }
+          .map { it.toActivityFeedItem() }
+          .filterNot { it.userId.isNotBlank() && sanitizeFirestoreId(it.userId) in blockedIds }
+      }.asSafeUiState("localActivityFeed")
     }
 
   val storiesState: StateFlow<UiState<List<MusicStoryItem>>> =
@@ -504,12 +530,16 @@ class VizyonMainViewModel(
         }
       }.asSafeUiState("stories")
     } else {
-      localLibraryDao.observeStories()
-        .map { list ->
-          val now = System.currentTimeMillis()
-          list.map { it.toMusicStoryItem() }.filter { it.expiresAtMillis == 0L || it.expiresAtMillis > now }
+      combine(
+        localLibraryDao.observeStories(),
+        blockedIdSetFlow
+      ) { list, blockedIds ->
+        val now = System.currentTimeMillis()
+        list.map { it.toMusicStoryItem() }.filter { story ->
+          (story.expiresAtMillis == 0L || story.expiresAtMillis > now) &&
+            (story.userId.isBlank() || sanitizeFirestoreId(story.userId) !in blockedIds)
         }
-        .asSafeUiState("localStories")
+      }.asSafeUiState("localStories")
     }
 
   val artistFanPostsState: StateFlow<UiState<List<ArtistFanPost>>> =
@@ -538,6 +568,34 @@ class VizyonMainViewModel(
       }
       .asSafeUiState("activityComments")
 
+  val activityLikersState: StateFlow<UiState<List<ActivityLikeUser>>> =
+    _selectedLikesActivityId
+      .flatMapLatest { activityId ->
+        if (activityId.isNullOrBlank()) {
+          flowOf(emptyList())
+        } else if (!currentUserId.isNullOrBlank()) {
+          firestoreRepo.observeActivityLikes(currentUserId, activityId)
+        } else {
+          val me = (userProfileState.value as? UiState.Success)?.data
+          if (activityId in _likedActivityIdsInSession.value) {
+            flowOf(
+              listOf(
+                ActivityLikeUser(
+                  id = "local",
+                  userId = "local",
+                  displayName = me?.displayName?.ifBlank { "Sen (Yerel)" } ?: "Sen (Yerel)",
+                  handle = me?.handle?.ifBlank { "@vizyon" } ?: "@vizyon",
+                  photoUrl = resolvedCurrentUserAvatar()
+                )
+              )
+            )
+          } else {
+            flowOf(emptyList())
+          }
+        }
+      }
+      .asSafeUiState("activityLikers")
+
   val notificationsState: StateFlow<UiState<List<UserNotification>>> =
     if (!currentUserId.isNullOrBlank()) {
       combine(
@@ -549,10 +607,32 @@ class VizyonMainViewModel(
         }
       }.asSafeUiState("notifications")
     } else {
-      localLibraryDao.observeNotifications()
-        .map { list -> list.map { it.toUserNotification() } }
-        .asSafeUiState("localNotifications")
+      combine(
+        localLibraryDao.observeNotifications(),
+        blockedIdSetFlow
+      ) { list, blockedIds ->
+        list.map { it.toUserNotification() }.filterNot { notif ->
+          notif.senderId.isNotBlank() && sanitizeFirestoreId(notif.senderId) in blockedIds
+        }
+      }.asSafeUiState("localNotifications")
     }
+
+  val isBlockedByActivePeerState: StateFlow<Boolean> =
+    _activeChatPeer
+      .flatMapLatest { peer ->
+        val rawPeerId = peer?.userId?.ifBlank { peer.id }.orEmpty()
+        if (rawPeerId.isBlank() || currentUserId.isNullOrBlank()) {
+          flowOf(false)
+        } else {
+          firestoreRepo.observeIsBlockedByPeer(currentUserId, sanitizeFirestoreId(rawPeerId))
+        }
+      }
+      .catch { emit(false) }
+      .stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000L),
+        initialValue = false
+      )
 
   val unreadNotificationCount: StateFlow<Int> =
     notificationsState
@@ -566,15 +646,48 @@ class VizyonMainViewModel(
       )
 
   init {
+    appContext?.let { ctx ->
+      if (!currentUserId.isNullOrBlank()) {
+        NotificationDispatchGuard.setLastActiveUserId(ctx, currentUserId)
+      }
+      val uidKey = currentUserId ?: "guest"
+      viewModelScope.launch {
+        blockedIdSetFlow.collect { blockedIds ->
+          NotificationDispatchGuard.setBlockedUserIds(ctx, uidKey, blockedIds)
+        }
+      }
+    }
     viewModelScope.launch {
       val cfg = runCatching { appearancePrefs.configFlow.first() }.getOrNull()
-      if (cfg != null && cfg.onboardingCompleted && cfg.lockOnLaunch && cfg.hasVaultPasscode) {
-        _isVaultLocked.value = true
+      if (cfg != null) {
+        appContext?.let { ctx ->
+          NotificationDispatchGuard.setNotificationsEnabled(ctx, cfg.notificationsEnabled)
+          NotificationDispatchGuard.setBackgroundPushEnabled(ctx, cfg.backgroundNotifServiceEnabled)
+        }
+        if (cfg.onboardingCompleted && cfg.lockOnLaunch && cfg.hasVaultPasscode) {
+          _isVaultLocked.value = true
+        }
       }
-      syncBackgroundNotifService(cfg)
+      syncPushNotificationRegistration(cfg)
     }
     if (!currentUserId.isNullOrBlank()) {
       bootstrapCloudProfile(currentUserId)
+      viewModelScope.launch {
+        activityFeedState.collect { st ->
+          val items = (st as? UiState.Success)?.data ?: return@collect
+          val unhydrated =
+            items.map { sanitizeFirestoreId(it.id) }
+              .filter { it.isNotBlank() && it !in hydratedLikeCheckIds }
+              .take(35)
+          if (unhydrated.isNotEmpty()) {
+            hydratedLikeCheckIds.addAll(unhydrated)
+            val liked = firestoreRepo.fetchLikedActivityIds(currentUserId, unhydrated)
+            if (liked.isNotEmpty()) {
+              _likedActivityIdsInSession.value = _likedActivityIdsInSession.value + liked
+            }
+          }
+        }
+      }
     }
     refreshCatalog()
     viewModelScope.launch {
@@ -604,6 +717,21 @@ class VizyonMainViewModel(
     }
     startRealtimeNotificationDispatcher()
     startActiveChatReceiveChimeWatcher()
+    if (!currentUserId.isNullOrBlank()) {
+      viewModelScope.launch {
+        combine(userProfileState, appearanceState) { st, cfg -> st to cfg }
+          .collect { (st, cfg) ->
+            val profile = (st as? UiState.Success)?.data ?: return@collect
+            val pushAllowed = cfg.notificationsEnabled && cfg.backgroundNotifServiceEnabled
+            val needsHeal = pushAllowed && (profile.fcmToken.isBlank() || !profile.fcmPushEnabled)
+            val now = System.currentTimeMillis()
+            if (needsHeal && now - lastAutoTokenHealAtMs > 20_000L) {
+              lastAutoTokenHealAtMs = now
+              syncPushNotificationRegistration(cfg)
+            }
+          }
+      }
+    }
   }
 
   private fun startRealtimeNotificationDispatcher() {
@@ -667,14 +795,54 @@ class VizyonMainViewModel(
     }
   }
 
-  private fun syncBackgroundNotifService(cfgOverride: AppAppearanceConfig? = null) {
+  private fun syncPushNotificationRegistration(cfgOverride: AppAppearanceConfig? = null) {
     val ctx = appContext ?: return
+    val uid = currentUserId ?: return
     val cfg = cfgOverride ?: appearanceState.value
-    VizyonRealtimeNotificationService.syncServiceState(
-      context = ctx,
-      uid = currentUserId,
-      notificationsEnabled = cfg.notificationsEnabled,
-      backgroundNotifServiceEnabled = cfg.backgroundNotifServiceEnabled
+    viewModelScope.launch {
+      VizyonFcmTokenSync.syncCurrentUserToken(
+        context = ctx,
+        uid = uid,
+        notificationsEnabled = cfg.notificationsEnabled,
+        fcmPushEnabled = cfg.backgroundNotifServiceEnabled
+      )
+    }
+  }
+
+  fun refreshFcmTokenNow() {
+    val ctx = appContext ?: return
+    val uid = currentUserId
+    if (uid.isNullOrBlank()) {
+      notifyUser("Anlık push eşitlemesi için Google hesabınla oturum açmalısın.")
+      return
+    }
+    val cfg = appearanceState.value
+    if (!cfg.notificationsEnabled || !cfg.backgroundNotifServiceEnabled) {
+      notifyUser("Önce bildirimleri ve Anlık Push (FCM) anahtarını açmalısın.")
+      return
+    }
+    viewModelScope.launch {
+      val ok =
+        VizyonFcmTokenSync.syncCurrentUserTokenWithStatus(
+          context = ctx,
+          uid = uid,
+          notificationsEnabled = true,
+          fcmPushEnabled = true
+        )
+      notifyUser(
+        if (ok) "FCM push token buluta başarıyla eşitlendi!"
+        else VizyonFcmTokenSync.lastSyncError
+          ?: "FCM token alınamadı; internet veya Google Play Hizmetleri bağlantısını kontrol et."
+      )
+    }
+  }
+
+  fun sendLocalTestNotification() {
+    val ctx = appContext ?: return
+    val posted = VizyonNotificationHelper.postLocalTestNotification(ctx)
+    notifyUser(
+      if (posted) "MessagingStyle test bildirimi gönderildi!"
+      else "Cihaz bildirim izni verilmediği için test bildirimi gösterilemedi."
     )
   }
 
@@ -695,19 +863,31 @@ class VizyonMainViewModel(
         NotificationDispatchGuard.markBaselineSeen(ctx, uidKey, filteredList.map { it.id })
         return
       }
+      if (!NotificationDispatchGuard.isNotificationsEnabled(ctx) || !appearanceState.value.notificationsEnabled) {
+        return
+      }
+      val isInitialProcessBatch = !inMemoryBaselineReady
+      inMemoryBaselineReady = true
       val unread = filteredList.filter { !it.read }
-      val unseenIds =
-        NotificationDispatchGuard.filterAndMarkUnseen(ctx, uidKey, unread.map { it.id }).toSet()
-      if (!appearanceState.value.notificationsEnabled) return
-      unread
-        .filter { it.id in unseenIds }
-        .forEach { newNotif ->
-          if (_isAppInForeground.value) {
-            presentInAppBubbleIfAllowed(newNotif)
-          } else {
-            VizyonNotificationHelper.postSocialNotification(ctx, newNotif)
+      unread.forEach { newNotif ->
+        if (NotificationDispatchGuard.isNotificationSeen(ctx, uidKey, newNotif.id)) return@forEach
+        if (isInitialProcessBatch && newNotif.sent) {
+          NotificationDispatchGuard.markNotificationSeen(ctx, uidKey, newNotif.id)
+          return@forEach
+        }
+        if (_isAppInForeground.value) {
+          NotificationDispatchGuard.markNotificationSeen(ctx, uidKey, newNotif.id)
+          presentInAppBubbleIfAllowed(newNotif)
+        } else {
+          // Use fast non-blocking MessagingStyle path in background so OS process freeze
+          // or background network limits never drop or delay delivery, and only mark seen
+          // once NotificationManager.notify actually succeeds.
+          val posted = VizyonNotificationHelper.postFcmNotificationFast(ctx, newNotif)
+          if (posted) {
+            NotificationDispatchGuard.markNotificationSeen(ctx, uidKey, newNotif.id)
           }
         }
+      }
     } else {
       if (!inMemoryBaselineReady) {
         inMemorySeenNotificationIds.addAll(filteredList.map { it.id })
@@ -739,6 +919,8 @@ class VizyonMainViewModel(
         if (remoteProfile.securityPasscodeHash.isNotBlank() && (remoteProfile.lockOnLaunch || !remoteProfile.rememberMe)) {
           _isVaultLocked.value = true
         }
+        val restoredCfg = runCatching { appearancePrefs.configFlow.first() }.getOrNull()
+        syncPushNotificationRegistration(restoredCfg)
         refreshCatalog(remoteProfile.favoriteGenres, AppLanguage.entries.firstOrNull { it.name == remoteProfile.preferredLanguage } ?: AppLanguage.TURKISH)
         notifyUser("Hoş geldin ${remoteProfile.displayName}! Bulut verilerin ve ayarların geri yüklendi.")
         return@launch
@@ -752,6 +934,9 @@ class VizyonMainViewModel(
         config?.cloudAvatarDataUrl?.takeIf { it.isNotBlank() }
           ?: fbUser?.photoUrl?.toString().orEmpty()
       val (passHash, passSalt) = appearancePrefs.currentVaultPasscodePair()
+      val cachedToken = appContext?.let { NotificationDispatchGuard.getCachedFcmToken(it) }.orEmpty()
+      val pushEnabledFlag =
+        (config?.notificationsEnabled ?: true) && (config?.backgroundNotifServiceEnabled ?: true)
 
       firestoreRepo.ensureUserProfileExists(
         uid = uid,
@@ -772,8 +957,11 @@ class VizyonMainViewModel(
         preferredCornerDensity = config?.cornerDensity?.name ?: CornerDensity.BALANCED.name,
         preferredLanguage = config?.preferredLanguage?.name ?: AppLanguage.TURKISH.name,
         onboardingCompleted = config?.onboardingCompleted ?: false,
-        recentTracks = recentTracks
+        recentTracks = recentTracks,
+        fcmToken = if (pushEnabledFlag) cachedToken else "",
+        fcmPushEnabled = pushEnabledFlag
       )
+      syncPushNotificationRegistration(config)
 
       if (remoteProfile != null && (config?.onboardingCompleted == true)) {
         // Sync latest local setup or photo to cloud if user finished onboarding before Google sign-in
@@ -852,6 +1040,7 @@ class VizyonMainViewModel(
         val (passHash, passSalt) = appearancePrefs.currentVaultPasscodePair()
         val recents = appearancePrefs.currentRecentTracks()
 
+        val cachedToken = appContext?.let { NotificationDispatchGuard.getCachedFcmToken(it) }.orEmpty()
         firestoreRepo.ensureUserProfileExists(
           uid = currentUserId,
           displayName = displayName,
@@ -872,7 +1061,9 @@ class VizyonMainViewModel(
           preferredCornerDensity = cornerDensity.name,
           preferredLanguage = preferredLanguage.name,
           onboardingCompleted = true,
-          recentTracks = recents
+          recentTracks = recents,
+          fcmToken = if (backgroundNotifServiceEnabled) cachedToken else "",
+          fcmPushEnabled = backgroundNotifServiceEnabled
         )
         firestoreRepo.updateUserProfile(
           userId = currentUserId,
@@ -898,7 +1089,7 @@ class VizyonMainViewModel(
         )
       }
       val latestCfg = runCatching { appearancePrefs.configFlow.first() }.getOrNull()
-      syncBackgroundNotifService(latestCfg)
+      syncPushNotificationRegistration(latestCfg)
       refreshCatalog(favoriteGenres, preferredLanguage)
       notifyUser("Stüdyo kurulumu tamamlandı, hoş geldin!")
     }
@@ -1036,7 +1227,12 @@ class VizyonMainViewModel(
       }
       _isDeletingAccount.value = true
       try {
-        appContext?.let { VizyonRealtimeNotificationService.stop(it) }
+        appContext?.let { ctx ->
+          VizyonNotificationHelper.cancelAllSystemNotifications(ctx)
+          if (!currentUserId.isNullOrBlank()) {
+            VizyonFcmTokenSync.clearTokenOnSignOutOrDelete(ctx, currentUserId)
+          }
+        }
         playerManager.resetAllForAccountDeletion()
         if (!currentUserId.isNullOrBlank()) {
           val res = firestoreRepo.deleteAllUserDataAndAccount(currentUserId)
@@ -1124,46 +1320,71 @@ class VizyonMainViewModel(
 
   fun search(query: String) {
     autocompleteJob?.cancel()
+    searchJob?.cancel()
     _searchSuggestionsState.value = emptyList()
-    viewModelScope.launch {
-      val clean = query.trim()
-      if (clean.isEmpty()) {
-        _searchState.value = UiState.Success(SearchResultData())
-        return@launch
-      }
-      _searchState.value = UiState.Loading
-      try {
-        val country = appearanceState.value.preferredLanguage.itunesCountry
-        val (tracks, artists) = hybridMusicRepo.searchUnified(clean, country)
-        _searchState.value = UiState.Success(SearchResultData(clean, tracks, artists))
-      } catch (e: CancellationException) {
-        throw e
-      } catch (e: Exception) {
-        _searchState.value = UiState.Error(e.localizedMessage ?: "Arama başarısız")
-      }
+    val clean = query.trim()
+    if (clean.isEmpty()) {
+      _searchState.value = UiState.Success(SearchResultData())
+      return
     }
+    searchJob =
+      viewModelScope.launch {
+        _searchState.value = UiState.Loading
+        try {
+          val country = appearanceState.value.preferredLanguage.itunesCountry
+          val (tracks, artists) = hybridMusicRepo.searchUnified(clean, country)
+          _searchState.value = UiState.Success(SearchResultData(clean, tracks, artists))
+        } catch (e: CancellationException) {
+          throw e
+        } catch (e: Exception) {
+          _searchState.value = UiState.Error(e.localizedMessage ?: "Arama başarısız")
+        }
+      }
   }
 
   fun playTrack(track: MusicTrack, queue: List<MusicTrack> = listOf(track)) {
     resolveVideoJob?.cancel()
-    playerManager.prepareLoading(track, queue)
+    autoFallbackAttemptsPerTrack[track.trackId] = 0
+    val excluded = excludedVideoIdsPerTrack[track.trackId]?.toSet().orEmpty()
+    val initialTrack =
+      if (track.youtubeVideoId.isNotBlank() && track.youtubeVideoId in excluded) {
+        track.copy(youtubeVideoId = "")
+      } else {
+        track
+      }
+    playerManager.prepareLoading(initialTrack, queue)
     _openNowPlayingNonce.value += 1
     viewModelScope.launch {
-      val updatedRecent = appearancePrefs.recordRecentTrack(track)
+      val updatedRecent = appearancePrefs.recordRecentTrack(initialTrack)
       if (!currentUserId.isNullOrBlank()) {
         val cfg = appearanceState.value
         val profile = (userProfileState.value as? UiState.Success)?.data
         val shareAllowed = cfg.shareListeningActivity && (profile?.shareActivity ?: true)
         if (shareAllowed) {
-          firestoreRepo.updateLiveListeningStatus(currentUserId, track, updatedRecent)
+          firestoreRepo.updateLiveListeningStatus(currentUserId, initialTrack, updatedRecent)
         }
       }
     }
     resolveVideoJob =
       viewModelScope.launch {
-        when (val result = hybridMusicRepo.resolveYouTubeVideoForTrack(track)) {
+        when (
+          val result =
+            hybridMusicRepo.resolveYouTubeVideoForTrack(
+              track = initialTrack,
+              excludedVideoIds = excluded
+            )
+        ) {
           is VideoResolutionResult.Success -> {
             playerManager.onVideoResolved(result.track, queue)
+            val updatedRecent = appearancePrefs.recordRecentTrack(result.track)
+            if (!currentUserId.isNullOrBlank()) {
+              val cfg = appearanceState.value
+              val profile = (userProfileState.value as? UiState.Success)?.data
+              val shareAllowed = cfg.shareListeningActivity && (profile?.shareActivity ?: true)
+              if (shareAllowed) {
+                firestoreRepo.updateLiveListeningStatus(currentUserId, result.track, updatedRecent)
+              }
+            }
           }
           is VideoResolutionResult.MissingApiKey -> {
             playerManager.onVideoResolutionFailed(
@@ -1179,22 +1400,29 @@ class VizyonMainViewModel(
 
   fun retryCurrentTrackVideo() {
     val current = playbackState.value.currentTrack ?: return
-    val failedVideoId = playbackState.value.activeVideoId.takeIf { it.isNotBlank() }
-    val excluded = if (failedVideoId != null && playbackState.value.playbackMessage != null) setOf(failedVideoId) else emptySet()
+    val activeVid = playbackState.value.activeVideoId.takeIf { it.isNotBlank() }
+    val trackExcluded = excludedVideoIdsPerTrack.getOrPut(current.trackId) { mutableSetOf() }
+    if (activeVid != null) trackExcluded.add(activeVid)
+    if (current.youtubeVideoId.isNotBlank()) trackExcluded.add(current.youtubeVideoId)
+    val excludedSnapshot = trackExcluded.toSet()
+
     resolveVideoJob?.cancel()
-    playerManager.prepareLoading(current.copy(youtubeVideoId = ""), playbackState.value.queue)
+    val clearedTrack = current.copy(youtubeVideoId = "")
+    playerManager.prepareLoading(clearedTrack, playbackState.value.queue)
     resolveVideoJob =
       viewModelScope.launch {
         when (
           val result =
             hybridMusicRepo.resolveYouTubeVideoForTrack(
-              track = current,
+              track = clearedTrack,
               forceRefresh = true,
-              excludedVideoIds = excluded
+              excludedVideoIds = excludedSnapshot
             )
         ) {
-          is VideoResolutionResult.Success ->
+          is VideoResolutionResult.Success -> {
             playerManager.onVideoResolved(result.track, playbackState.value.queue)
+            appearancePrefs.recordRecentTrack(result.track)
+          }
           is VideoResolutionResult.MissingApiKey ->
             playerManager.onVideoResolutionFailed("YOUTUBE_API_KEY tanımlı değil.")
           is VideoResolutionResult.NotFound ->
@@ -1208,13 +1436,26 @@ class VizyonMainViewModel(
   fun onYouTubeIFrameStateChanged(stateCode: Int) = playerManager.onIFrameStateChanged(stateCode)
   fun onYouTubeIFrameProgress(currentSec: Double, durationSec: Double) =
     playerManager.onIFrameProgress(currentSec, durationSec)
-  fun onYouTubeIFrameError(code: Int) = playerManager.onIFrameError(code)
+
+  fun onYouTubeIFrameError(code: Int) {
+    val current = playbackState.value.currentTrack
+    val retryableCodes = setOf(100, 101, 150, 152, 153)
+    if (current != null && code in retryableCodes) {
+      val attempts = autoFallbackAttemptsPerTrack.getOrDefault(current.trackId, 0)
+      if (attempts < 2) {
+        autoFallbackAttemptsPerTrack[current.trackId] = attempts + 1
+        retryCurrentTrackVideo()
+        return
+      }
+    }
+    playerManager.onIFrameError(code)
+  }
+
   fun onYouTubeIFrameLoadFailure(reason: String) = playerManager.onIFrameLoadFailure(reason)
 
   fun pauseForBackground() {
     _isAppInForeground.value = false
     playerManager.pauseForBackground()
-    appContext?.let { BackgroundNotificationJobService.schedule(it) }
   }
 
   fun onHostResumed() {
@@ -1223,9 +1464,8 @@ class VizyonMainViewModel(
     checkAndAutoRefreshDiscover()
     appContext?.let { ctx ->
       StudioSoundEngine.warmup(ctx)
-      BackgroundNotificationJobService.schedule(ctx)
-      syncBackgroundNotifService()
     }
+    syncPushNotificationRegistration()
     if (!currentUserId.isNullOrBlank()) {
       viewModelScope.launch {
         val latest = firestoreRepo.fetchLatestNotificationsOnce(currentUserId)
@@ -1428,6 +1668,7 @@ class VizyonMainViewModel(
           }
           .onFailure { notifyUser(it.localizedMessage ?: "Silinemedi") }
       } else {
+        localLibraryDao.deleteTracksForPlaylist(playlistId)
         localLibraryDao.deletePlaylist(playlistId)
         if (_selectedPlaylistId.value == playlistId) _selectedPlaylistId.value = null
         notifyUser("Çalma listesi silindi")
@@ -1671,6 +1912,11 @@ class VizyonMainViewModel(
     if (openPeerId == safeTarget) {
       _activeChatPeer.value = null
     }
+    appContext?.let { ctx ->
+      val uidKey = currentUserId ?: "guest"
+      NotificationDispatchGuard.setBlockedUserIds(ctx, uidKey, currentBlockedIdSet() + safeTarget)
+      VizyonNotificationHelper.cancelNotificationsForSender(ctx, safeTarget)
+    }
     viewModelScope.launch {
       if (!currentUserId.isNullOrBlank()) {
         firestoreRepo.blockUser(
@@ -1785,8 +2031,12 @@ class VizyonMainViewModel(
     val myName = me?.displayName?.ifBlank { "Vizyon Dinleyicisi" } ?: "Vizyon Dinleyicisi"
     val myHandle = me?.handle?.ifBlank { "@vizyon" } ?: "@vizyon"
     val myAvatar = resolvedCurrentUserAvatar()
-    StudioSoundEngine.playMessageSendChime(appContext)
     viewModelScope.launch {
+      if (firestoreRepo.isBlockedByPeer(currentUserId, safePeerId)) {
+        notifyUser("Bu kişi tarafından engellendiniz.")
+        return@launch
+      }
+      StudioSoundEngine.playMessageSendChime(appContext)
       firestoreRepo.sendMessageRequest(
         requesterId = currentUserId,
         requesterName = myName,
@@ -1833,6 +2083,22 @@ class VizyonMainViewModel(
         recipientHandle = myHandle,
         recipientAvatarUrl = myAvatar
       ).onSuccess {
+        if (accept) {
+          val reqUid = sanitizeFirestoreId(request.requesterId.ifBlank { request.id })
+          if (reqUid.isNotBlank() && reqUid != uid) {
+            firestoreRepo.sendNotification(
+              recipientUserId = reqUid,
+              senderId = uid,
+              senderName = myName,
+              senderHandle = myHandle,
+              senderAvatarUrl = myAvatar,
+              type = NotificationType.FOLLOW,
+              message = "Takip isteğini kabul etti!",
+              targetType = "PROFILE",
+              targetId = uid
+            )
+          }
+        }
         notifyUser(
           if (accept) "${request.requesterName} takip isteği kabul edildi."
           else "${request.requesterName} takip isteği reddedildi."
@@ -1849,6 +2115,7 @@ class VizyonMainViewModel(
     openChatOnAccept: Boolean = true
   ) {
     val uid = currentUserId ?: return
+    val reqUid = sanitizeFirestoreId(request.requesterId.ifBlank { request.id })
     val me = (userProfileState.value as? UiState.Success)?.data
     val myName = me?.displayName?.ifBlank { "Vizyon Dinleyicisi" } ?: "Vizyon Dinleyicisi"
     val myHandle = me?.handle?.ifBlank { "@vizyon" } ?: "@vizyon"
@@ -1865,7 +2132,6 @@ class VizyonMainViewModel(
         if (accept) {
           notifyUser("${request.requesterName} mesaj isteği kabul edildi.")
           if (openChatOnAccept && !createdChatId.isNullOrBlank()) {
-            val reqUid = sanitizeFirestoreId(request.requesterId.ifBlank { request.id })
             if (reqUid.isNotBlank()) {
               _activeChatPeer.value = PublicProfile(
                 id = reqUid,
@@ -1964,6 +2230,10 @@ class VizyonMainViewModel(
       notifyUser("Engellenen kullanıcıya mesaj gönderilemez.")
       return
     }
+    if (isBlockedByActivePeerState.value) {
+      notifyUser("Bu kişi tarafından engellendiniz.")
+      return
+    }
     val cleanText =
       text.trim().ifBlank {
         attachedTrack?.let { "♪ ${it.title} — ${it.artistName}" } ?: ""
@@ -1982,10 +2252,38 @@ class VizyonMainViewModel(
     val myName = me?.displayName?.ifBlank { "Vizyon Dinleyicisi" } ?: "Vizyon Dinleyicisi"
     val myHandle = me?.handle?.ifBlank { "@vizyon" } ?: "@vizyon"
     val myAvatar = resolvedCurrentUserAvatar()
+    val selfUid = currentUserId ?: "local"
+    val chatId = buildDirectChatId(selfUid, peerId)
+    val msgId = sanitizeFirestoreId("msg_${UUID.randomUUID().toString().take(12)}")
 
-    StudioSoundEngine.playMessageSendChime(appContext)
     viewModelScope.launch {
       if (!currentUserId.isNullOrBlank()) {
+        if (firestoreRepo.isBlockedByPeer(currentUserId, peerId)) {
+          notifyUser("Bu kişi tarafından engellendiniz.")
+          return@launch
+        }
+        val optimisticMsg =
+          DirectChatMessage(
+            id = msgId,
+            chatId = chatId,
+            participantIds = listOf(selfUid, peerId).sorted(),
+            senderId = selfUid,
+            senderName = myName,
+            senderHandle = myHandle,
+            senderAvatarUrl = myAvatar,
+            text = cleanText,
+            messageType = if (attachedTrack != null) DirectMessageType.TRACK.name else DirectMessageType.TEXT.name,
+            trackId = attachedTrack?.trackId.orEmpty(),
+            trackTitle = attachedTrack?.title.orEmpty(),
+            artistName = attachedTrack?.artistName.orEmpty(),
+            albumArtUrl = attachedTrack?.artworkUrl.orEmpty(),
+            youtubeVideoId = attachedTrack?.youtubeVideoId.orEmpty(),
+            source = attachedTrack?.source?.name.orEmpty(),
+            createdAt = Timestamp.now(),
+            updatedAt = Timestamp.now()
+          )
+        _optimisticChatMessages.value = _optimisticChatMessages.value + optimisticMsg
+        StudioSoundEngine.playMessageSendChime(appContext)
         firestoreRepo
           .sendDirectMessage(
             senderId = currentUserId,
@@ -1994,7 +2292,8 @@ class VizyonMainViewModel(
             senderAvatarUrl = myAvatar,
             peer = peer,
             text = cleanText,
-            attachedTrack = attachedTrack
+            attachedTrack = attachedTrack,
+            messageId = msgId
           )
           .onSuccess {
             firestoreRepo.sendNotification(
@@ -2011,12 +2310,15 @@ class VizyonMainViewModel(
               targetId = currentUserId
             )
           }
-          .onFailure { notifyUser(it.localizedMessage ?: "Mesaj gönderilemedi") }
+          .onFailure {
+            _optimisticChatMessages.value = _optimisticChatMessages.value.filterNot { m -> m.id == msgId }
+            notifyUser(it.localizedMessage ?: "Mesaj gönderilemedi")
+          }
       } else {
-        val chatId = buildDirectChatId("local", peerId)
+        StudioSoundEngine.playMessageSendChime(appContext)
         localLibraryDao.insertDirectMessage(
           LocalDirectMessageEntity(
-            id = sanitizeFirestoreId("msg_${UUID.randomUUID().toString().take(12)}"),
+            id = msgId,
             chatId = chatId,
             peerId = peerId,
             peerName = peer.displayName.ifBlank { "Dinleyici" },
@@ -2040,6 +2342,131 @@ class VizyonMainViewModel(
     }
   }
 
+  fun sendTrackToPeer(peer: PublicProfile, track: MusicTrack, note: String = "") {
+    val rawPeerId = peer.userId.ifBlank { peer.id }
+    if (rawPeerId.isBlank()) return
+    val peerId = sanitizeFirestoreId(rawPeerId)
+    if (peerId == currentUserId || peerId == "local") {
+      notifyUser("Kendine şarkı mesajı gönderemezsin.")
+      return
+    }
+    if (peerId in currentBlockedIdSet()) {
+      notifyUser("Engellenen kullanıcıya şarkı gönderilemez.")
+      return
+    }
+    val activeRaw = _activeChatPeer.value?.let { it.userId.ifBlank { it.id } }.orEmpty()
+    if (isBlockedByActivePeerState.value && sanitizeFirestoreId(activeRaw) == peerId) {
+      notifyUser("Bu kişi tarafından engellendiniz.")
+      return
+    }
+    val cleanText =
+      note.trim().ifBlank { "♪ ${track.title} — ${track.artistName}" }.take(600)
+    if (ChatPrivacy.fromRaw(peer.chatPrivacy) == ChatPrivacy.FOLLOWERS_ONLY && !isConnectedWithPeer(peerId)) {
+      sendMessageRequest(
+        peer = peer,
+        previewText = "♪ ${track.title} • ${cleanText.take(120)}",
+        messageType = DirectMessageType.TRACK
+      )
+      return
+    }
+
+    val me = (userProfileState.value as? UiState.Success)?.data
+    val myName = me?.displayName?.ifBlank { "Vizyon Dinleyicisi" } ?: "Vizyon Dinleyicisi"
+    val myHandle = me?.handle?.ifBlank { "@vizyon" } ?: "@vizyon"
+    val myAvatar = resolvedCurrentUserAvatar()
+    val selfUid = currentUserId ?: "local"
+    val chatId = buildDirectChatId(selfUid, peerId)
+    val msgId = sanitizeFirestoreId("msg_${UUID.randomUUID().toString().take(12)}")
+
+    viewModelScope.launch {
+      if (!currentUserId.isNullOrBlank()) {
+        if (firestoreRepo.isBlockedByPeer(currentUserId, peerId)) {
+          notifyUser("Bu kişi tarafından engellendiniz.")
+          return@launch
+        }
+        val optimisticMsg =
+          DirectChatMessage(
+            id = msgId,
+            chatId = chatId,
+            participantIds = listOf(selfUid, peerId).sorted(),
+            senderId = selfUid,
+            senderName = myName,
+            senderHandle = myHandle,
+            senderAvatarUrl = myAvatar,
+            text = cleanText,
+            messageType = DirectMessageType.TRACK.name,
+            trackId = track.trackId,
+            trackTitle = track.title,
+            artistName = track.artistName,
+            albumArtUrl = track.artworkUrl,
+            youtubeVideoId = track.youtubeVideoId,
+            source = track.source.name,
+            createdAt = Timestamp.now(),
+            updatedAt = Timestamp.now()
+          )
+        _optimisticChatMessages.value = _optimisticChatMessages.value + optimisticMsg
+        StudioSoundEngine.playMessageSendChime(appContext)
+        firestoreRepo
+          .sendDirectMessage(
+            senderId = currentUserId,
+            senderName = myName,
+            senderHandle = myHandle,
+            senderAvatarUrl = myAvatar,
+            peer = peer,
+            text = cleanText,
+            attachedTrack = track,
+            messageType = DirectMessageType.TRACK,
+            messageId = msgId
+          )
+          .onSuccess {
+            notifyUser("${peer.displayName} adlı dinleyiciye şarkı gönderildi!")
+            firestoreRepo.sendNotification(
+              recipientUserId = peerId,
+              senderId = currentUserId,
+              senderName = myName,
+              senderHandle = myHandle,
+              senderAvatarUrl = myAvatar,
+              type = NotificationType.MESSAGE,
+              trackId = track.trackId,
+              trackTitle = track.title,
+              message = cleanText.take(120),
+              targetType = "CHAT",
+              targetId = currentUserId
+            )
+          }
+          .onFailure {
+            _optimisticChatMessages.value = _optimisticChatMessages.value.filterNot { m -> m.id == msgId }
+            notifyUser(it.localizedMessage ?: "Şarkı gönderilemedi")
+          }
+      } else {
+        StudioSoundEngine.playMessageSendChime(appContext)
+        localLibraryDao.insertDirectMessage(
+          LocalDirectMessageEntity(
+            id = msgId,
+            chatId = chatId,
+            peerId = peerId,
+            peerName = peer.displayName.ifBlank { "Dinleyici" },
+            peerHandle = peer.handle.ifBlank { "@vizyon" },
+            peerAvatarUrl = peer.photoUrl,
+            senderId = "local",
+            senderName = myName,
+            senderHandle = myHandle,
+            senderAvatarUrl = myAvatar,
+            text = cleanText,
+            messageType = DirectMessageType.TRACK.name,
+            trackId = track.trackId,
+            trackTitle = track.title,
+            artistName = track.artistName,
+            albumArtUrl = track.artworkUrl,
+            youtubeVideoId = track.youtubeVideoId,
+            source = track.source.name
+          )
+        )
+        notifyUser("${peer.displayName} adlı dinleyiciye şarkı gönderildi!")
+      }
+    }
+  }
+
   fun sendVoiceDirectMessage(
     audioBase64: String,
     durationMs: Long,
@@ -2051,6 +2478,10 @@ class VizyonMainViewModel(
     val peerId = sanitizeFirestoreId(rawPeerId)
     if (peerId in currentBlockedIdSet()) {
       notifyUser("Engellenen kullanıcıya sesli mesaj gönderilemez.")
+      return
+    }
+    if (isBlockedByActivePeerState.value) {
+      notifyUser("Bu kişi tarafından engellendiniz.")
       return
     }
     if (ChatPrivacy.fromRaw(peer.chatPrivacy) == ChatPrivacy.FOLLOWERS_ONLY && !isConnectedWithPeer(peerId)) {
@@ -2070,10 +2501,34 @@ class VizyonMainViewModel(
     val myAvatar = resolvedCurrentUserAvatar()
     val secLabel = ((durationMs + 500L) / 1000L).coerceIn(1L, 30L).toString().padStart(2, '0')
     val cleanText = caption.trim().ifBlank { "🎤 Sesli mesaj (0:$secLabel)" }
+    val selfUid = currentUserId ?: "local"
+    val chatId = buildDirectChatId(selfUid, peerId)
+    val msgId = sanitizeFirestoreId("msg_${UUID.randomUUID().toString().take(12)}")
 
-    StudioSoundEngine.playMessageSendChime(appContext)
     viewModelScope.launch {
       if (!currentUserId.isNullOrBlank()) {
+        if (firestoreRepo.isBlockedByPeer(currentUserId, peerId)) {
+          notifyUser("Bu kişi tarafından engellendiniz.")
+          return@launch
+        }
+        val optimisticVoice =
+          DirectChatMessage(
+            id = msgId,
+            chatId = chatId,
+            participantIds = listOf(selfUid, peerId).sorted(),
+            senderId = selfUid,
+            senderName = myName,
+            senderHandle = myHandle,
+            senderAvatarUrl = myAvatar,
+            text = cleanText,
+            messageType = DirectMessageType.VOICE.name,
+            audioBase64 = audioBase64,
+            audioDurationMs = durationMs,
+            createdAt = Timestamp.now(),
+            updatedAt = Timestamp.now()
+          )
+        _optimisticChatMessages.value = _optimisticChatMessages.value + optimisticVoice
+        StudioSoundEngine.playMessageSendChime(appContext)
         firestoreRepo
           .sendDirectMessage(
             senderId = currentUserId,
@@ -2084,7 +2539,8 @@ class VizyonMainViewModel(
             text = cleanText,
             messageType = DirectMessageType.VOICE,
             audioBase64 = audioBase64,
-            audioDurationMs = durationMs
+            audioDurationMs = durationMs,
+            messageId = msgId
           )
           .onSuccess {
             firestoreRepo.sendNotification(
@@ -2099,12 +2555,15 @@ class VizyonMainViewModel(
               targetId = currentUserId
             )
           }
-          .onFailure { notifyUser(it.localizedMessage ?: "Sesli mesaj gönderilemedi") }
+          .onFailure {
+            _optimisticChatMessages.value = _optimisticChatMessages.value.filterNot { m -> m.id == msgId }
+            notifyUser(it.localizedMessage ?: "Sesli mesaj gönderilemedi")
+          }
       } else {
-        val chatId = buildDirectChatId("local", peerId)
+        StudioSoundEngine.playMessageSendChime(appContext)
         localLibraryDao.insertDirectMessage(
           LocalDirectMessageEntity(
-            id = sanitizeFirestoreId("msg_${UUID.randomUUID().toString().take(12)}"),
+            id = msgId,
             chatId = chatId,
             peerId = peerId,
             peerName = peer.displayName.ifBlank { "Dinleyici" },
@@ -2143,8 +2602,7 @@ class VizyonMainViewModel(
           .onSuccess { notifyUser("Sohbet kalıcı olarak silindi.") }
           .onFailure { notifyUser(it.localizedMessage ?: "Sohbet silinemedi") }
       } else {
-        val chatId = buildDirectChatId("local", safePeerId)
-        localLibraryDao.deleteDirectMessagesForChat(chatId)
+        localLibraryDao.deleteDirectMessagesForChat(buildDirectChatId("local", safePeerId))
         notifyUser("Sohbet kalıcı olarak silindi.")
       }
     }
@@ -2184,6 +2642,14 @@ class VizyonMainViewModel(
 
   fun closeActivityComments() {
     _selectedCommentActivityId.value = null
+  }
+
+  fun openActivityLikes(activityId: String) {
+    _selectedLikesActivityId.value = sanitizeFirestoreId(activityId)
+  }
+
+  fun closeActivityLikes() {
+    _selectedLikesActivityId.value = null
   }
 
   fun publishQuickSocialPost(note: String, selectedTrack: MusicTrack?) {
@@ -2250,17 +2716,34 @@ class VizyonMainViewModel(
     }
   }
 
-  fun likeActivity(item: ActivityFeedItem) {
-    _likedActivityIdsInSession.value = _likedActivityIdsInSession.value + item.id
+  fun likeActivity(item: ActivityFeedItem) = toggleLikeActivity(item)
+
+  fun toggleLikeActivity(item: ActivityFeedItem) {
+    val safeId = sanitizeFirestoreId(item.id)
+    if (safeId.isBlank()) return
+    val currentSet = _likedActivityIdsInSession.value
+    val wasLiked = safeId in currentSet
+    _likedActivityIdsInSession.value = if (wasLiked) currentSet - safeId else currentSet + safeId
+
     val me = (userProfileState.value as? UiState.Success)?.data
     val myName = me?.displayName?.ifBlank { "Vizyon Dinleyicisi" } ?: "Vizyon Dinleyicisi"
     val myHandle = me?.handle?.ifBlank { "@vizyon" } ?: "@vizyon"
     val myAvatar = resolvedCurrentUserAvatar()
     viewModelScope.launch {
       if (!currentUserId.isNullOrBlank()) {
-        firestoreRepo.likeActivityItem(item.id, item.likesCount)
-          .onSuccess {
-            if (item.userId.isNotBlank() && item.userId != currentUserId) {
+        firestoreRepo
+          .toggleLikeActivityItem(
+            activityId = safeId,
+            userId = currentUserId,
+            userName = myName,
+            userHandle = myHandle,
+            userAvatarUrl = myAvatar
+          )
+          .onSuccess { nowLiked ->
+            _likedActivityIdsInSession.value =
+              if (nowLiked) _likedActivityIdsInSession.value + safeId
+              else _likedActivityIdsInSession.value - safeId
+            if (nowLiked && item.userId.isNotBlank() && item.userId != currentUserId) {
               firestoreRepo.sendNotification(
                 recipientUserId = item.userId,
                 senderId = currentUserId,
@@ -2272,12 +2755,22 @@ class VizyonMainViewModel(
                 trackTitle = item.trackTitle,
                 message = "Paylaştığın '${item.trackTitle}' parçasını beğendi.",
                 targetType = "POST",
-                targetId = item.id
+                targetId = safeId
               )
             }
           }
+          .onFailure {
+            _likedActivityIdsInSession.value =
+              if (wasLiked) _likedActivityIdsInSession.value + safeId
+              else _likedActivityIdsInSession.value - safeId
+            notifyUser(it.localizedMessage ?: "Beğeni güncellenemedi")
+          }
       } else {
-        localLibraryDao.incrementActivityLike(item.id)
+        if (wasLiked) {
+          localLibraryDao.decrementActivityLike(safeId)
+        } else {
+          localLibraryDao.incrementActivityLike(safeId)
+        }
       }
     }
   }
@@ -2540,29 +3033,72 @@ class VizyonMainViewModel(
 
   fun handleNotificationIntent(intent: Intent?) {
     if (intent == null) return
-    val notifId = intent.getStringExtra(VizyonNotificationHelper.EXTRA_NOTIF_ID).orEmpty()
-    val targetType = intent.getStringExtra(VizyonNotificationHelper.EXTRA_NOTIF_TARGET_TYPE).orEmpty()
-    val targetId = intent.getStringExtra(VizyonNotificationHelper.EXTRA_NOTIF_TARGET_ID).orEmpty()
-    val trackId = intent.getStringExtra(VizyonNotificationHelper.EXTRA_NOTIF_TRACK_ID).orEmpty()
-    val senderId = intent.getStringExtra(VizyonNotificationHelper.EXTRA_NOTIF_SENDER_ID).orEmpty()
-    val typeRaw = intent.getStringExtra(VizyonNotificationHelper.EXTRA_NOTIF_TYPE).orEmpty()
-    if (notifId.isBlank() && targetType.isBlank()) return
+    val notifId =
+      intent.getStringExtra(VizyonNotificationHelper.EXTRA_NOTIF_ID)?.ifBlank { null }
+        ?: intent.getStringExtra("notificationId")?.ifBlank { null }
+        ?: intent.getStringExtra("id")
+        ?: ""
+    val targetType =
+      intent.getStringExtra(VizyonNotificationHelper.EXTRA_NOTIF_TARGET_TYPE)?.ifBlank { null }
+        ?: intent.getStringExtra("targetType")
+        ?: ""
+    val targetId =
+      intent.getStringExtra(VizyonNotificationHelper.EXTRA_NOTIF_TARGET_ID)?.ifBlank { null }
+        ?: intent.getStringExtra("targetId")
+        ?: ""
+    val trackId =
+      intent.getStringExtra(VizyonNotificationHelper.EXTRA_NOTIF_TRACK_ID)?.ifBlank { null }
+        ?: intent.getStringExtra("trackId")
+        ?: ""
+    val senderId =
+      intent.getStringExtra(VizyonNotificationHelper.EXTRA_NOTIF_SENDER_ID)?.ifBlank { null }
+        ?: intent.getStringExtra("senderId")
+        ?: ""
+    val typeRaw =
+      intent.getStringExtra(VizyonNotificationHelper.EXTRA_NOTIF_TYPE)?.ifBlank { null }
+        ?: intent.getStringExtra("type")?.ifBlank { null }
+        ?: intent.getStringExtra("notificationType")
+        ?: ""
+    if (notifId.isBlank() && targetType.isBlank() && targetId.isBlank() && senderId.isBlank() && typeRaw.isBlank()) {
+      return
+    }
 
     if (notifId.isNotBlank()) {
+      appContext?.let { ctx ->
+        NotificationDispatchGuard.markNotificationSeen(ctx, currentUserId ?: "guest", notifId)
+      }
       markNotificationRead(notifId)
     }
-    val fakeNotif =
+    val resolvedNotif =
       UserNotification(
         id = notifId,
         senderId = senderId,
-        type = typeRaw.ifBlank { NotificationType.LIKE.name },
+        type = typeRaw.ifBlank { NotificationType.MESSAGE.name },
         trackId = trackId,
         targetType = targetType,
         targetId = targetId
       )
-    handleNotificationTap(fakeNotif)
-    intent.removeExtra(VizyonNotificationHelper.EXTRA_NOTIF_ID)
-    intent.removeExtra(VizyonNotificationHelper.EXTRA_NOTIF_TARGET_TYPE)
+    handleNotificationTap(resolvedNotif)
+    listOf(
+      VizyonNotificationHelper.EXTRA_NOTIF_ID,
+      VizyonNotificationHelper.EXTRA_NOTIF_TARGET_TYPE,
+      VizyonNotificationHelper.EXTRA_NOTIF_TARGET_ID,
+      VizyonNotificationHelper.EXTRA_NOTIF_TRACK_ID,
+      VizyonNotificationHelper.EXTRA_NOTIF_SENDER_ID,
+      VizyonNotificationHelper.EXTRA_NOTIF_TYPE,
+      "notificationId",
+      "id",
+      "targetType",
+      "targetId",
+      "trackId",
+      "senderId",
+      "type",
+      "notificationType",
+      "channelId",
+      "recipientId"
+    ).forEach { key ->
+      runCatching { intent.removeExtra(key) }
+    }
   }
 
   fun consumePendingDeepLink() {
@@ -2585,11 +3121,10 @@ class VizyonMainViewModel(
         ?.filter { !it.read }
         ?.map { it.id }
         .orEmpty()
-    if (ids.isEmpty()) return
     viewModelScope.launch {
-      if (!currentUserId.isNullOrBlank()) {
+      if (!currentUserId.isNullOrBlank() && ids.isNotEmpty()) {
         firestoreRepo.markAllNotificationsRead(currentUserId, ids)
-      } else {
+      } else if (currentUserId.isNullOrBlank()) {
         localLibraryDao.markAllNotificationsRead()
       }
     }
@@ -2597,11 +3132,13 @@ class VizyonMainViewModel(
 
   fun deleteNotification(notificationId: String) {
     if (notificationId.isBlank()) return
+    val targetNotif =
+      (notificationsState.value as? UiState.Success)?.data?.firstOrNull { it.id == notificationId }
     viewModelScope.launch {
       if (!currentUserId.isNullOrBlank()) {
         firestoreRepo.deleteNotification(currentUserId, notificationId)
           .onSuccess {
-            appContext?.let { VizyonNotificationHelper.cancelSystemNotification(it, notificationId) }
+            appContext?.let { VizyonNotificationHelper.cancelSystemNotification(it, notificationId, targetNotif) }
             notifyUser("Bildirim silindi")
           }
           .onFailure {
@@ -2609,7 +3146,7 @@ class VizyonMainViewModel(
           }
       } else {
         localLibraryDao.deleteNotificationById(notificationId)
-        appContext?.let { VizyonNotificationHelper.cancelSystemNotification(it, notificationId) }
+        appContext?.let { VizyonNotificationHelper.cancelSystemNotification(it, notificationId, targetNotif) }
         notifyUser("Bildirim silindi")
       }
     }
@@ -2657,7 +3194,7 @@ class VizyonMainViewModel(
     viewModelScope.launch {
       appearancePrefs.updateNotificationsEnabled(enabled)
       val cfg = appearanceState.value.copy(notificationsEnabled = enabled)
-      syncBackgroundNotifService(cfg)
+      syncPushNotificationRegistration(cfg)
       notifyUser(if (enabled) "Sosyal bildirimler etkinleştirildi" else "Sosyal bildirimler sessize alındı")
     }
 
@@ -2665,10 +3202,10 @@ class VizyonMainViewModel(
     viewModelScope.launch {
       appearancePrefs.updateBackgroundNotifServiceEnabled(enabled)
       val cfg = appearanceState.value.copy(backgroundNotifServiceEnabled = enabled)
-      syncBackgroundNotifService(cfg)
+      syncPushNotificationRegistration(cfg)
       notifyUser(
-        if (enabled) "Arka plan canlı bildirim servisi etkinleştirildi."
-        else "Arka plan canlı bildirim servisi durduruldu."
+        if (enabled) "Anlık push bildirimleri (FCM) etkinleştirildi."
+        else "Anlık push bildirimleri (FCM) devre dışı bırakıldı."
       )
     }
 

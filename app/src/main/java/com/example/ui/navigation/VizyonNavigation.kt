@@ -73,7 +73,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ExitTransition
 import com.example.model.DirectMessageType
 import com.example.model.MusicStoryItem
 import com.example.model.MusicTrack
@@ -120,7 +120,9 @@ private data class ReportTargetUser(
   val targetUserId: String,
   val targetType: String,
   val targetId: String,
-  val displayName: String
+  val displayName: String,
+  val handle: String = "",
+  val avatarUrl: String = ""
 )
 
 @Serializable object DiscoverRoute
@@ -181,6 +183,7 @@ fun VizyonMainShell(
   val followedArtistsState by viewModel.followedArtistsState.collectAsStateWithLifecycle()
   val activityFeedState by viewModel.activityFeedState.collectAsStateWithLifecycle()
   val activityCommentsState by viewModel.activityCommentsState.collectAsStateWithLifecycle()
+  val activityLikersState by viewModel.activityLikersState.collectAsStateWithLifecycle()
   val storiesState by viewModel.storiesState.collectAsStateWithLifecycle()
   val selfRecentTracks by viewModel.selfRecentTracksState.collectAsStateWithLifecycle()
   val isAutoRefreshingCatalog by viewModel.isAutoRefreshingCatalog.collectAsStateWithLifecycle()
@@ -202,6 +205,7 @@ fun VizyonMainShell(
   val incomingMessageRequestsState by viewModel.incomingMessageRequestsState.collectAsStateWithLifecycle()
   val outgoingRequestKeys by viewModel.outgoingRequestKeysState.collectAsStateWithLifecycle()
   val pendingRequestsCount by viewModel.pendingRequestsCount.collectAsStateWithLifecycle()
+  val isBlockedByActivePeer by viewModel.isBlockedByActivePeerState.collectAsStateWithLifecycle()
 
   var showNowPlaying by remember { mutableStateOf(false) }
   var showNotificationInbox by remember { mutableStateOf(false) }
@@ -568,6 +572,7 @@ fun VizyonMainShell(
                 storiesState = storiesState,
                 activityFeedState = activityFeedState,
                 activityCommentsState = activityCommentsState,
+                activityLikersState = activityLikersState,
                 publicListenersState = publicListenersState,
                 followingState = followingState,
                 followersCount = followersCount,
@@ -582,6 +587,8 @@ fun VizyonMainShell(
                 onDeleteStory = { viewModel.deleteStory(it) },
                 onPlayActivityTrack = { viewModel.playTrack(it) },
                 onLikeActivity = { viewModel.likeActivity(it) },
+                onOpenLikes = { viewModel.openActivityLikes(it.id) },
+                onCloseLikes = { viewModel.closeActivityLikes() },
                 onOpenComments = { viewModel.openActivityComments(it.id) },
                 onCloseComments = { viewModel.closeActivityComments() },
                 onSubmitComment = { activity, text -> viewModel.submitActivityComment(activity, text) },
@@ -610,7 +617,18 @@ fun VizyonMainShell(
                 },
                 onReportUser = { uid, type, id, name ->
                   if (uid.isNotBlank()) {
-                    pendingReportTarget = ReportTargetUser(uid, type, id, name)
+                    val safeUid = sanitizeFirestoreId(uid)
+                    val listener = (publicListenersState as? UiState.Success)?.data
+                      ?.firstOrNull { sanitizeFirestoreId(it.userId.ifBlank { it.id }) == safeUid }
+                    pendingReportTarget =
+                      ReportTargetUser(
+                        targetUserId = uid,
+                        targetType = type,
+                        targetId = id,
+                        displayName = name,
+                        handle = listener?.handle.orEmpty(),
+                        avatarUrl = listener?.photoUrl.orEmpty()
+                      )
                   }
                 }
               )
@@ -688,6 +706,8 @@ fun VizyonMainShell(
                 onUpdateFavoriteGenres = { viewModel.updateFavoriteGenres(it) },
                 onOpenFollowLists = { viewModel.inspectFollowLists(currentUserId ?: "local") },
                 onSyncCloudBackupNow = { viewModel.syncCloudBackupNow() },
+                onRefreshFcmToken = { viewModel.refreshFcmTokenNow() },
+                onSendTestNotification = { viewModel.sendLocalTestNotification() },
                 onDeleteAccount = { bypassPreCheck, onReauth, onCompleted ->
                   viewModel.deleteAccount(
                     bypassFreshnessPreCheck = bypassPreCheck,
@@ -745,9 +765,7 @@ fun VizyonMainShell(
       enter =
         slideInVertically(tween(170, easing = overlayEase)) { it / 18 } +
           fadeIn(tween(170, easing = overlayEase)),
-      exit =
-        slideOutVertically(tween(130, easing = overlayEase)) { it / 20 } +
-          fadeOut(tween(130, easing = overlayEase))
+      exit = ExitTransition.None
     ) {
       val activeTrack = playbackState.currentTrack
       if (sharedWebView != null && activeTrack != null) {
@@ -836,10 +854,22 @@ fun VizyonMainShell(
       }
 
       shareDialogTrack?.let { tr ->
+        val listenersForShare =
+          ((publicListenersState as? UiState.Success)?.data ?: emptyList())
+            .filter { it.userId != currentUserId }
         ShareTrackDialog(
           track = tr,
+          listeners = listenersForShare,
+          followingIds = myFollowingIds,
+          currentUserName = userName,
+          currentUserHandle = profile?.handle ?: "@vizyon",
+          currentUserPhotoUrl = effectiveUserPhoto,
+          defaultStoryTheme = appearance.defaultStoryTheme,
           onDismiss = { shareDialogTrack = null },
-          onShareToFeed = { note -> viewModel.shareTrackToActivityFeed(tr, note) }
+          onShareToFeed = { note -> viewModel.shareTrackToActivityFeed(tr, note) },
+          onShareToStory = { note, theme -> viewModel.publishStory(tr, note, theme) },
+          onSendTrackDirectMessage = { peer, note -> viewModel.sendTrackToPeer(peer, tr, note) },
+          onNotifyMessage = { viewModel.notifyUser(it) }
         )
       }
 
@@ -871,11 +901,12 @@ fun VizyonMainShell(
             (favTracks + catalogTracks).distinctBy { it.trackId }.take(8)
           }
         val hasPendingMsgReq =
-          peerSafeId.isNotBlank() && "msg_${peerSafeId}::PENDING" in outgoingRequestKeys
+          peerSafeId.isNotBlank() && "message_${peerSafeId}::PENDING" in outgoingRequestKeys
         DirectChatThreadSheet(
           peer = peer,
           currentUserId = currentUserId,
           isFollowerOrFollowing = peerSafeId.isNotBlank() && (peerSafeId in myFollowingIds || peerSafeId in myFollowerIds),
+          isBlockedByPeer = isBlockedByActivePeer,
           messagesState = activeChatMessagesState,
           currentTrack = playbackState.currentTrack,
           candidateTracks = dmCandidateTracks,
@@ -912,7 +943,15 @@ fun VizyonMainShell(
           },
           onReportUser = {
             if (peerSafeId.isNotBlank()) {
-              pendingReportTarget = ReportTargetUser(peerSafeId, "USER", peerSafeId, peer.displayName)
+              pendingReportTarget =
+                ReportTargetUser(
+                  targetUserId = peerSafeId,
+                  targetType = "USER",
+                  targetId = peerSafeId,
+                  displayName = peer.displayName,
+                  handle = peer.handle,
+                  avatarUrl = peer.photoUrl
+                )
             }
           },
           onNotifyMessage = { viewModel.notifyUser(it) }
@@ -923,10 +962,10 @@ fun VizyonMainShell(
         val listeners = (publicListenersState as? UiState.Success)?.data.orEmpty()
         val targetLabel =
           if (targetUid == currentUserId || targetUid == "local") {
-            "$userName • Bağlantılar"
+            "$userName • Topluluğum"
           } else {
             listeners.firstOrNull { sanitizeFirestoreId(it.userId.ifBlank { it.id }) == targetUid }?.displayName
-              ?.let { "$it • Bağlantılar" } ?: "Takip Bağlantıları"
+              ?.let { "$it • Topluluğu" } ?: "Topluluk Listesi"
           }
         FollowConnectionsModalSheet(
           title = targetLabel,
@@ -951,11 +990,12 @@ fun VizyonMainShell(
       }
 
       pendingReportTarget?.let { target ->
+        val alreadyBlocked = viewModel.isUserBlocked(target.targetUserId)
         ReportUserDialog(
           targetDisplayName = target.displayName,
+          isAlreadyBlocked = alreadyBlocked,
           onDismiss = { pendingReportTarget = null },
           onSubmitReport = { reason, details ->
-            pendingReportTarget = null
             viewModel.reportUser(
               targetUserId = target.targetUserId,
               targetType = target.targetType,
@@ -963,6 +1003,18 @@ fun VizyonMainShell(
               reason = reason,
               details = details
             )
+          },
+          onBlockAfterReport = {
+            val safeUid = sanitizeFirestoreId(target.targetUserId)
+            val listener = (publicListenersState as? UiState.Success)?.data
+              ?.firstOrNull { sanitizeFirestoreId(it.userId.ifBlank { it.id }) == safeUid }
+            viewModel.blockUser(
+              targetUserId = target.targetUserId,
+              targetName = target.displayName,
+              targetHandle = target.handle.ifBlank { listener?.handle.orEmpty() },
+              targetAvatarUrl = target.avatarUrl.ifBlank { listener?.photoUrl.orEmpty() }
+            )
+            pendingReportTarget = null
           }
         )
       }
@@ -1031,7 +1083,17 @@ fun VizyonMainShell(
             } else null,
           onReportAuthor =
             if (!isAuthor) {
-              { pendingReportTarget = ReportTargetUser(story.userId, "STORY", story.id, story.userName) }
+              {
+                pendingReportTarget =
+                  ReportTargetUser(
+                    targetUserId = story.userId,
+                    targetType = "STORY",
+                    targetId = story.id,
+                    displayName = story.userName,
+                    handle = story.userHandle,
+                    avatarUrl = story.userAvatarUrl
+                  )
+              }
             } else null
         )
       }

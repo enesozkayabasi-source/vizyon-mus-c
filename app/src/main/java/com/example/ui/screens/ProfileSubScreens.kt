@@ -1,8 +1,12 @@
 package com.example.ui.screens
 
 import android.Manifest
+import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -29,8 +33,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Logout
+import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.AddAPhoto
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.CheckCircle
@@ -41,6 +47,7 @@ import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material.icons.rounded.VerifiedUser
 import androidx.compose.material3.HorizontalDivider
@@ -66,6 +73,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.BuildConfig
 import com.example.model.AccentPalette
 import com.example.model.ApiBridgeStatus
 import com.example.model.AppAppearanceConfig
@@ -75,6 +84,7 @@ import com.example.model.BlockedUser
 import com.example.model.ChatPrivacy
 import com.example.model.CornerDensity
 import com.example.model.StoryCardTheme
+import com.example.notifications.NotificationDispatchGuard
 import com.example.notifications.VizyonNotificationHelper
 import com.example.ui.components.AccountDeletionSecurityCard
 import com.example.ui.components.GlassStudioCard
@@ -280,6 +290,7 @@ internal fun ProfileAboutPrivacySubScreen(
   unreadNotificationCount: Int,
   bridgeStatus: ApiBridgeStatus?,
   blockedUsers: List<BlockedUser> = emptyList(),
+  firebaseUid: String? = null,
   onBack: () -> Unit,
   onChatPrivacyChange: (ChatPrivacy) -> Unit,
   onRequireFollowApprovalToggle: (Boolean) -> Unit = {},
@@ -288,19 +299,31 @@ internal fun ProfileAboutPrivacySubScreen(
   onOpenNotifications: () -> Unit,
   onUnblockUser: (String) -> Unit = {},
   onOpenDataSafety: () -> Unit = {},
+  onRefreshFcmToken: () -> Unit = {},
+  onSendTestNotification: () -> Unit = {},
   onNotifyMessage: (String) -> Unit
 ) {
   BackHandler(onBack = onBack)
   val context = LocalContext.current
 
+  val tokenSyncVersion by NotificationDispatchGuard.tokenSyncVersion.collectAsStateWithLifecycle()
   var hasNotificationPermission by remember {
     mutableStateOf(VizyonNotificationHelper.hasNotificationPermission(context))
+  }
+  val cachedFcmToken = remember(firebaseUid, appearance.backgroundNotifServiceEnabled, tokenSyncVersion) {
+    NotificationDispatchGuard.getCachedFcmToken(context)
+  }
+  val isFcmTokenSynced = remember(firebaseUid, cachedFcmToken, appearance.backgroundNotifServiceEnabled, tokenSyncVersion) {
+    NotificationDispatchGuard.isTokenSyncedForUser(context, firebaseUid)
   }
   val notificationPermissionLauncher =
     rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
       hasNotificationPermission = granted
+      if (granted) {
+        onRefreshFcmToken()
+      }
       onNotifyMessage(
-        if (granted) "Cihaz bildirim izni verildi!"
+        if (granted) "Cihaz bildirim izni verildi ve push kaydı yenilendi!"
         else "Cihaz bildirimi kapalı; bildirimlerin uygulama içi kutuya düşmeye devam edecek."
       )
     }
@@ -313,73 +336,15 @@ internal fun ProfileAboutPrivacySubScreen(
     item {
       ProfileSubPageTopBar(
         title = "Hakkında & Gizlilik",
-        subtitle = "UYGULAMA & GÜVENLİK",
+        subtitle = "ONAY, ENGELLEME & GİZLİLİK",
         onBack = onBack
       )
     }
 
+    // 1. Approval & Chat Privacy Controls at the VERY TOP
     item {
       GlassStudioCard(
         highlighted = true,
-        cornerRadius = 24.dp,
-        modifier = Modifier.fillMaxWidth().testTag("about_vizyon_card")
-      ) {
-        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-            modifier = Modifier.fillMaxWidth()
-          ) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-              Icon(Icons.Rounded.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-              Text("Vizyon Music", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            }
-            Surface(
-              color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-              shape = RoundedCornerShape(999.dp)
-            ) {
-              Text(
-                text = "v2.6 Studio",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-              )
-            }
-          }
-          Text(
-            text = "Türk ve global müzik keşfi, 24 saatlik görsel müzik hikayeleri, takipçilerle birebir sohbet ve gerçek zamanlı senkronlu şarkı sözleri için tasarlanmış modern stüdyo.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-          )
-          Surface(
-            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.56f),
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth()
-          ) {
-            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-              Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(Icons.Rounded.Shield, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(18.dp))
-                Text("Gizlilik & Veri İlkeleri", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-              }
-              Text("• Fotoğraf seçimi sıfır depolama izniyle Android Fotoğraf Seçici üzerinden yapılır.", style = MaterialTheme.typography.bodySmall)
-              Text("• Stüdyo kasa şifresi cihazda SHA-256 + rastgele tuz ile korunur.", style = MaterialTheme.typography.bodySmall)
-              Text("• Google bulut yedeği isteğe bağlıdır; tüm verilerini istediğin an kalıcı silebilirsin.", style = MaterialTheme.typography.bodySmall)
-            }
-          }
-          StudioGlassButton(
-            text = "Veri Güvenliği Beyanı (Data Safety)",
-            icon = Icons.Rounded.VerifiedUser,
-            onClick = onOpenDataSafety,
-            modifier = Modifier.fillMaxWidth().testTag("open_data_safety_btn")
-          )
-        }
-      }
-    }
-
-    item {
-      GlassStudioCard(
-        highlighted = false,
         cornerRadius = 22.dp,
         modifier = Modifier.fillMaxWidth().testTag("about_chat_privacy_card")
       ) {
@@ -427,6 +392,7 @@ internal fun ProfileAboutPrivacySubScreen(
       }
     }
 
+    // 2. Notification Permission & Controls directly below approval controls
     item {
       ProfileNotificationSettingsCard(
         notificationsEnabled = appearance.notificationsEnabled,
@@ -438,6 +404,7 @@ internal fun ProfileAboutPrivacySubScreen(
             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
           } else {
             hasNotificationPermission = true
+            onRefreshFcmToken()
             onNotifyMessage("Cihaz bildirimleri etkin!")
           }
         },
@@ -445,16 +412,45 @@ internal fun ProfileAboutPrivacySubScreen(
       )
     }
 
+    // 3. Instant Push (FCM) & Killed-State Diagnostics
     item {
       GlassStudioCard(
         highlighted = appearance.backgroundNotifServiceEnabled,
         cornerRadius = 22.dp,
         modifier = Modifier.fillMaxWidth().testTag("profile_bg_notif_card")
       ) {
-        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-          Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Icon(Icons.Rounded.NotificationsActive, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
-            Text("Kesintisiz Arka Plan Bildirimleri", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+              Icon(Icons.Rounded.NotificationsActive, contentDescription = null, tint = MaterialTheme.colorScheme.secondary)
+              Text("Anlık Push Bildirimleri (FCM)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            }
+            Surface(
+              color =
+                if (isFcmTokenSynced && hasNotificationPermission) MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+              shape = RoundedCornerShape(999.dp)
+            ) {
+              Text(
+                text =
+                  when {
+                    !hasNotificationPermission -> "İzin Gerekli"
+                    isFcmTokenSynced -> "Eşitlendi ✓"
+                    cachedFcmToken.isNotBlank() -> "Token Hazır"
+                    else -> "Bekleniyor"
+                  },
+                style = MaterialTheme.typography.labelSmall,
+                color =
+                  if (isFcmTokenSynced && hasNotificationPermission) MaterialTheme.colorScheme.primary
+                  else MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+              )
+            }
           }
           Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -463,12 +459,12 @@ internal fun ProfileAboutPrivacySubScreen(
           ) {
             Column(modifier = Modifier.weight(1f)) {
               Text(
-                text = "Canlı bildirim dinleyici servisi",
+                text = "Uygulama kapalıyken anlık push al",
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold
               )
               Text(
-                text = "Uygulama arka planda veya kapalıyken mesaj ve bildirim seslerinin 3. bildirimden sonra kesilmesini engeller.",
+                text = "Uygulama tamamen kapatıldığında Firebase Cloud Messaging (FCM HTTP v1) ve anlık bildirim sunucusu ile MessagingStyle bildirimlerini sesli ve görünür şekilde teslim eder.",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
               )
@@ -479,13 +475,82 @@ internal fun ProfileAboutPrivacySubScreen(
               modifier = Modifier.testTag("profile_bg_notif_switch")
             )
           }
+
+          Surface(
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.56f),
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+              val tokenSummary =
+                if (cachedFcmToken.length > 14) "${cachedFcmToken.take(8)}…${cachedFcmToken.takeLast(6)}"
+                else if (cachedFcmToken.isNotBlank()) cachedFcmToken
+                else "Henüz alınmadı"
+              val ignoringBatteryOpt =
+                remember(context) {
+                  val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                  pm?.isIgnoringBatteryOptimizations(context.packageName) ?: false
+                }
+              Text(
+                text = "FCM Token: $tokenSummary • Kanal: ${VizyonNotificationHelper.CHANNEL_MESSAGES}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2
+              )
+              Text(
+                text =
+                  if (ignoringBatteryOpt) {
+                    "Pil modu: Kısıtlamasız (Samsung / Xiaomi / Oppo kapalı bildirim için hazır)"
+                  } else {
+                    "Pil modu: Standart (Son uygulamalardan kapatınca bildirim için pil ayarını 'Kısıtlamasız' yapabilirsin)"
+                  },
+                style = MaterialTheme.typography.labelSmall,
+                color =
+                  if (ignoringBatteryOpt) MaterialTheme.colorScheme.primary
+                  else MaterialTheme.colorScheme.onSurfaceVariant
+              )
+            }
+          }
+
+          Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            StudioGlassButton(
+              text = "Token Yenile",
+              icon = Icons.Rounded.Refresh,
+              onClick = onRefreshFcmToken,
+              modifier = Modifier.weight(1f).testTag("refresh_fcm_token_btn")
+            )
+            StudioGlassButton(
+              text = "Test Bildirimi",
+              icon = Icons.AutoMirrored.Rounded.Send,
+              onClick = onSendTestNotification,
+              tintColor = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.weight(1f).testTag("send_local_test_notif_btn")
+            )
+          }
+
+          StudioGlassButton(
+            text = "Pil & Arka Plan Ayarı (Kısıtlamasız)",
+            icon = Icons.Rounded.BatteryChargingFull,
+            onClick = {
+              runCatching {
+                context.startActivity(
+                  Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.fromParts("package", context.packageName, null)
+                  ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                )
+              }
+            },
+            modifier = Modifier.fillMaxWidth().testTag("open_app_battery_settings_btn")
+          )
         }
       }
     }
 
+    // 4. Blocked Users Management promoted to upper section
     item {
       GlassStudioCard(
-        highlighted = false,
+        highlighted = blockedUsers.isNotEmpty(),
         cornerRadius = 22.dp,
         modifier = Modifier.fillMaxWidth().testTag("blocked_users_management_card")
       ) {
@@ -553,6 +618,66 @@ internal fun ProfileAboutPrivacySubScreen(
               }
             }
           }
+        }
+      }
+    }
+
+    // 5. Informational App & Privacy Principles moved below actionable controls
+    item {
+      GlassStudioCard(
+        highlighted = false,
+        cornerRadius = 24.dp,
+        modifier = Modifier.fillMaxWidth().testTag("about_vizyon_card")
+      ) {
+        Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+              Icon(Icons.Rounded.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+              Text("Vizyon Music", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            }
+            Surface(
+              color = MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+              shape = RoundedCornerShape(999.dp)
+            ) {
+              Text(
+                text = "v${BuildConfig.VERSION_NAME} Studio",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+              )
+            }
+          }
+          Text(
+            text = "Türk ve global müzik keşfi, 24 saatlik görsel müzik hikayeleri, takipçilerle birebir sohbet ve gerçek zamanlı senkronlu şarkı sözleri için tasarlanmış modern stüdyo.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+          )
+          Surface(
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.56f),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth()
+          ) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+              Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Rounded.Shield, contentDescription = null, tint = MaterialTheme.colorScheme.secondary, modifier = Modifier.size(18.dp))
+                Text("Gizlilik & Veri İlkeleri", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+              }
+              Text("• Fotoğraf seçimi sıfır depolama izniyle Android Fotoğraf Seçici üzerinden yapılır.", style = MaterialTheme.typography.bodySmall)
+              Text("• Stüdyo kasa şifresi cihazda SHA-256 + rastgele tuz ile korunur.", style = MaterialTheme.typography.bodySmall)
+              Text("• Google bulut yedeği isteğe bağlıdır; tüm verilerini istediğin an kalıcı silebilirsin.", style = MaterialTheme.typography.bodySmall)
+            }
+          }
+          StudioGlassButton(
+            text = "Veri Güvenliği Beyanı (Data Safety)",
+            icon = Icons.Rounded.VerifiedUser,
+            onClick = onOpenDataSafety,
+            modifier = Modifier.fillMaxWidth().testTag("open_data_safety_btn")
+          )
         }
       }
     }
@@ -702,7 +827,7 @@ internal fun ProfileSettingsSubScreen(
           }
 
           StudioGlassButton(
-            text = "Takipçi ($followersCount) & Takip ($followingCount) Bağlantıları",
+            text = "Takipçi ($followersCount) & Takip ($followingCount) Topluluğu",
             onClick = onOpenFollowLists,
             modifier = Modifier.fillMaxWidth().testTag("profile_open_follow_lists_btn")
           )

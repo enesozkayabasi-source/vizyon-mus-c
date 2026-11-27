@@ -440,6 +440,9 @@ interface LocalLibraryDao {
   @Query("DELETE FROM local_playlist_tracks WHERE playlistId = :playlistId AND trackId = :trackId")
   suspend fun deletePlaylistTrack(playlistId: String, trackId: String)
 
+  @Query("DELETE FROM local_playlist_tracks WHERE playlistId = :playlistId")
+  suspend fun deleteTracksForPlaylist(playlistId: String)
+
   @Query("DELETE FROM local_playlist_tracks")
   suspend fun deleteAllPlaylistTracks()
 
@@ -463,6 +466,9 @@ interface LocalLibraryDao {
 
   @Query("UPDATE local_activity_feed SET likesCount = likesCount + 1 WHERE id = :id")
   suspend fun incrementActivityLike(id: String)
+
+  @Query("UPDATE local_activity_feed SET likesCount = MAX(0, likesCount - 1) WHERE id = :id")
+  suspend fun decrementActivityLike(id: String)
 
   @Query("UPDATE local_activity_feed SET commentsCount = commentsCount + 1 WHERE id = :id")
   suspend fun incrementActivityComment(id: String)

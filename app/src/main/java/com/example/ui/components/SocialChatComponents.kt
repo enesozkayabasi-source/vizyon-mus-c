@@ -5,6 +5,9 @@ import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -75,6 +78,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -332,6 +337,7 @@ fun DirectChatThreadSheet(
   onDeleteChatThread: () -> Unit = {},
   onDeleteMessage: (DirectChatMessage) -> Unit = {},
   hasPendingMessageRequest: Boolean = false,
+  isBlockedByPeer: Boolean = false,
   onSendVoiceMessage: (String, Long) -> Unit = { _, _ -> },
   onSendMessageRequest: (String) -> Unit = {},
   onSendVoiceMessageRequest: (String, Long) -> Unit = { _, _ -> },
@@ -410,7 +416,17 @@ fun DirectChatThreadSheet(
 
   val listState = rememberLazyListState()
   val messages = (messagesState as? UiState.Success)?.data.orEmpty()
-  LaunchedEffect(messages.size) {
+  val seenBubbleIds = remember(peer.userId) { HashSet<String>() }
+  var chatBaselineLoaded by remember(peer.userId) { mutableStateOf(false) }
+
+  LaunchedEffect(peer.userId, messagesState) {
+    if (messagesState is UiState.Success && !chatBaselineLoaded) {
+      messages.forEach { seenBubbleIds.add(it.id) }
+      chatBaselineLoaded = true
+    }
+  }
+
+  LaunchedEffect(peer.userId, messages.size, messages.lastOrNull()?.id) {
     if (messages.isNotEmpty()) {
       listState.animateScrollToItem(messages.lastIndex)
     }
@@ -491,7 +507,7 @@ fun DirectChatThreadSheet(
         )
       }
 
-      if (blockedByPrivacy) {
+      if (!isBlockedByPeer && blockedByPrivacy) {
         Surface(
           color =
             if (hasPendingMessageRequest) MaterialTheme.colorScheme.secondary.copy(alpha = 0.14f)
@@ -541,8 +557,11 @@ fun DirectChatThreadSheet(
               Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxWidth().padding(32.dp)) {
                 Text(
                   text =
-                    if (blockedByPrivacy) "Henüz mesaj yok. Aşağıdan ${peer.displayName} için mesaj isteği gönderebilirsin."
-                    else "İlk mesajı, sesli mesajı veya sevdiğin bir şarkıyı ${peer.displayName} ile paylaş!",
+                    when {
+                      isBlockedByPeer -> "${peer.displayName} tarafından engellendiğin için yeni mesaj gönderemezsin."
+                      blockedByPrivacy -> "Henüz mesaj yok. Aşağıdan ${peer.displayName} için mesaj isteği gönderebilirsin."
+                      else -> "İlk mesajı, sesli mesajı veya sevdiğin bir şarkıyı ${peer.displayName} ile paylaş!"
+                    },
                   style = MaterialTheme.typography.bodyMedium,
                   color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -567,10 +586,38 @@ fun DirectChatThreadSheet(
                     bottomStart = if (isMine) 18.dp else 4.dp,
                     bottomEnd = if (isMine) 4.dp else 18.dp
                   )
+                  val shouldAnimateEntrance =
+                    remember(msg.id) { chatBaselineLoaded && seenBubbleIds.add(msg.id) }
+                  val revealProgress = remember(msg.id) { Animatable(if (shouldAnimateEntrance) 0f else 1f) }
+                  LaunchedEffect(msg.id, shouldAnimateEntrance) {
+                    if (shouldAnimateEntrance) {
+                      revealProgress.animateTo(
+                        targetValue = 1f,
+                        animationSpec =
+                          spring(
+                            dampingRatio = Spring.DampingRatioMediumBouncy,
+                            stiffness = Spring.StiffnessMediumLow
+                          )
+                      )
+                    }
+                  }
                   Row(
                     horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start,
                     verticalAlignment = Alignment.Bottom,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier =
+                      Modifier.fillMaxWidth()
+                        .graphicsLayer {
+                          val t = revealProgress.value
+                          val offsetPx = 28.dp.toPx()
+                          val risePx = 14.dp.toPx()
+                          translationX = (1f - t) * (if (isMine) offsetPx else -offsetPx)
+                          translationY = (1f - t) * risePx
+                          val sc = 0.88f + 0.12f * t
+                          scaleX = sc
+                          scaleY = sc
+                          transformOrigin = TransformOrigin(if (isMine) 1f else 0f, 1f)
+                          alpha = t.coerceIn(0f, 1f)
+                        }
                   ) {
                     if (!isMine) {
                       StudioAvatar(
@@ -770,7 +817,7 @@ fun DirectChatThreadSheet(
         }
       }
 
-      AnimatedVisibility(visible = showTrackPicker && trackOptions.isNotEmpty() && !blockedByPrivacy) {
+      AnimatedVisibility(visible = !isBlockedByPeer && showTrackPicker && trackOptions.isNotEmpty() && !blockedByPrivacy) {
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
           items(trackOptions, key = { "dm_track_${it.trackId}" }) { tr ->
             StudioInteractiveChip(
@@ -786,37 +833,86 @@ fun DirectChatThreadSheet(
         }
       }
 
-      attachedTrack?.let { tr ->
-        Surface(
-          color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
-          shape = RoundedCornerShape(12.dp),
-          modifier = Modifier.fillMaxWidth()
-        ) {
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+      if (!isBlockedByPeer) {
+        attachedTrack?.let { tr ->
+          Surface(
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth()
           ) {
-            Text(
-              text = "♪ ${tr.title} — ${tr.artistName}",
-              style = MaterialTheme.typography.labelMedium,
-              fontWeight = FontWeight.SemiBold,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-              modifier = Modifier.weight(1f)
-            )
-            StudioCircleIconButton(
-              icon = Icons.Rounded.Close,
-              contentDescription = "Parçayı kaldır",
-              onClick = { attachedTrack = null },
-              size = 36.dp
-            )
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.SpaceBetween,
+              modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+            ) {
+              Text(
+                text = "♪ ${tr.title} — ${tr.artistName}",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+              )
+              StudioCircleIconButton(
+                icon = Icons.Rounded.Close,
+                contentDescription = "Parçayı kaldır",
+                onClick = { attachedTrack = null },
+                size = 36.dp
+              )
+            }
           }
         }
       }
 
-      // Live Recording Bar or Recorded Voice Preview Bar (Max 30s)
-      if (isRecordingVoice) {
+      if (isBlockedByPeer) {
+        Surface(
+          color = MaterialTheme.colorScheme.error.copy(alpha = 0.13f),
+          shape = RoundedCornerShape(18.dp),
+          modifier =
+            Modifier.fillMaxWidth()
+              .padding(bottom = 8.dp)
+              .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.error.copy(alpha = 0.42f),
+                shape = RoundedCornerShape(18.dp)
+              )
+              .testTag("chat_blocked_by_peer_panel")
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 14.dp)
+          ) {
+            Box(
+              contentAlignment = Alignment.Center,
+              modifier =
+                Modifier.size(40.dp)
+                  .clip(CircleShape)
+                  .background(MaterialTheme.colorScheme.error.copy(alpha = 0.18f))
+            ) {
+              Icon(
+                imageVector = Icons.Rounded.Block,
+                contentDescription = "Engellendiniz",
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(22.dp)
+              )
+            }
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+              Text(
+                text = "Bu kişi tarafından engellendiniz",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.error
+              )
+              Text(
+                text = "Bu kullanıcı sizi engellediği için mesaj, sesli mesaj veya şarkı gönderemezsiniz.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+              )
+            }
+          }
+        }
+      } else if (isRecordingVoice) {
         Surface(
           color = MaterialTheme.colorScheme.error.copy(alpha = 0.16f),
           shape = RoundedCornerShape(16.dp),
@@ -1129,7 +1225,7 @@ fun FollowConnectionsModalSheet(
         modifier = Modifier.fillMaxWidth()
       ) {
         Text(
-          text = title.ifBlank { "Takip Bağlantıları" },
+          text = title.ifBlank { "Topluluk Listesi" },
           style = MaterialTheme.typography.headlineSmall,
           fontWeight = FontWeight.Bold
         )

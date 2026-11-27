@@ -270,17 +270,19 @@ fun SearchScreen(
             }
           }
         } else {
+          val uniqueArtists = remember(data.artists) { data.artists.distinctBy { it.artistId } }
+          val uniqueTracks = remember(data.tracks) { data.tracks.distinctBy { it.trackId } }
           LazyColumn(
             contentPadding = PaddingValues(bottom = 20.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
           ) {
-            if (data.artists.isNotEmpty()) {
+            if (uniqueArtists.isNotEmpty()) {
               item {
-                StudioSectionHeader(title = "Sanatçılar", badge = "${data.artists.size}")
+                StudioSectionHeader(title = "Sanatçılar", badge = "${uniqueArtists.size}")
               }
               item {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                  items(data.artists, key = { it.artistId }) { artist ->
+                  items(uniqueArtists, key = { it.artistId }) { artist ->
                     GlassStudioCard(
                       cornerRadius = 18.dp,
                       onClick = { onArtistClick(artist) },
@@ -319,10 +321,10 @@ fun SearchScreen(
             item {
               StudioSectionHeader(
                 title = "Şarkılar",
-                badge = "${data.tracks.size} sonuç"
+                badge = "${uniqueTracks.size} sonuç"
               )
             }
-            if (data.tracks.isEmpty()) {
+            if (uniqueTracks.isEmpty()) {
               item {
                 Text(
                   text = "Eşleşen sonuç bulunamadı. Farklı bir sanatçı veya parça adı deneyin.",
@@ -331,14 +333,14 @@ fun SearchScreen(
                 )
               }
             } else {
-              items(data.tracks, key = { it.trackId }) { track ->
+              items(uniqueTracks, key = { it.trackId }) { track ->
                 val safeId = sanitizeFirestoreId(track.trackId)
                 TrackRowItem(
                   track = track,
                   isCurrentTrack = currentTrackId == track.trackId,
                   isPlaying = isPlaying && currentTrackId == track.trackId,
                   isFavorite = safeId in favoriteIds,
-                  onPlayClick = { onPlayTrack(track, data.tracks) },
+                  onPlayClick = { onPlayTrack(track, uniqueTracks) },
                   onArtistClick = {
                     onArtistClick(
                       ArtistSummary(

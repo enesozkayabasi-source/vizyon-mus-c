@@ -1,0 +1,18 @@
+{
+  "name": "vizyon-music-fcm-worker",
+  "version": "1.0.0",
+  "description": "External Node.js FCM HTTP v1 dispatcher for Vizyon Music on Firebase Spark plan",
+  "main": "index.js",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "check": "node --check index.js",
+    "test": "node --test worker.test.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.1"
+  },
+  "private": true
+}

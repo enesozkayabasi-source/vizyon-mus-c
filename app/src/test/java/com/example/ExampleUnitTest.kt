@@ -300,4 +300,271 @@ class ExampleUnitTest {
     assertEquals("Merve Aydın", com.example.notifications.VizyonNotificationHelper.cleanDisplayNameOnly(legacyNotif.senderName))
     assertEquals("Bu şarkıyı mutlaka dinle!", com.example.notifications.VizyonNotificationHelper.sanitizeNotificationMessage(legacyNotif))
   }
+
+  @Test
+  fun youtubeCandidateMatcher_rejectsWrongSongBySameArtistAndPrefersTopicAudio() {
+    val repo = HybridMusicRepository()
+    val wrongSongSameArtist =
+      YouTubeSearchItem(
+        id = YouTubeSearchId(videoId = "vid_wrong_song"),
+        snippet = YouTubeSnippet(
+          title = "Tarkan - Dudu (Official Video)",
+          channelTitle = "Tarkan"
+        )
+      )
+    val topicExactSong =
+      YouTubeSearchItem(
+        id = YouTubeSearchId(videoId = "vid_topic_exact"),
+        snippet = YouTubeSnippet(
+          title = "Şımarık",
+          channelTitle = "Tarkan - Topic",
+          description = "Provided to YouTube by Universal Music Turkey"
+        )
+      )
+    val details =
+      mapOf(
+        "vid_wrong_song" to com.example.data.remote.YouTubeVideoItem(
+          id = "vid_wrong_song",
+          snippet = wrongSongSameArtist.snippet,
+          contentDetails = com.example.data.remote.YouTubeContentDetails(duration = "PT4M20S")
+        ),
+        "vid_topic_exact" to com.example.data.remote.YouTubeVideoItem(
+          id = "vid_topic_exact",
+          snippet = topicExactSong.snippet,
+          contentDetails = com.example.data.remote.YouTubeContentDetails(duration = "PT3M54S")
+        )
+      )
+
+    val picked =
+      repo.pickBestYouTubeCandidate(
+        items = listOf(wrongSongSameArtist, topicExactSong),
+        targetTitle = "Şımarık (Remastered 2020)",
+        targetArtist = "Tarkan",
+        detailsById = details,
+        targetDurationMs = 234_000L
+      )
+    assertEquals("vid_topic_exact", picked?.id?.videoId)
+  }
+
+  @Test
+  fun youtubeCandidateMatcher_rejectsShortsConcertsAndPartialWordFalsePositives() {
+    val repo = HybridMusicRepository()
+    val shortClip =
+      YouTubeSearchItem(
+        id = YouTubeSearchId(videoId = "vid_short"),
+        snippet = YouTubeSnippet(title = "Sertab Erener - Aşk #shorts", channelTitle = "Shorts Clips")
+      )
+    val fullConcert =
+      YouTubeSearchItem(
+        id = YouTubeSearchId(videoId = "vid_concert"),
+        snippet = YouTubeSnippet(title = "Sertab Erener - Aşk (Full Konser)", channelTitle = "Konser TV")
+      )
+    val wrongTitleSubstring =
+      YouTubeSearchItem(
+        id = YouTubeSearchId(videoId = "vid_substring"),
+        snippet = YouTubeSnippet(title = "Sertab Erener - Aşk Ölmez", channelTitle = "Sertab Erener")
+      )
+    val exactStudio =
+      YouTubeSearchItem(
+        id = YouTubeSearchId(videoId = "vid_exact_ask"),
+        snippet = YouTubeSnippet(title = "Sertab Erener - Aşk (Official Video)", channelTitle = "SertabErenerVEVO")
+      )
+    val details =
+      mapOf(
+        "vid_short" to com.example.data.remote.YouTubeVideoItem(
+          id = "vid_short",
+          snippet = shortClip.snippet,
+          contentDetails = com.example.data.remote.YouTubeContentDetails(duration = "PT25S")
+        ),
+        "vid_concert" to com.example.data.remote.YouTubeVideoItem(
+          id = "vid_concert",
+          snippet = fullConcert.snippet,
+          contentDetails = com.example.data.remote.YouTubeContentDetails(duration = "PT52M10S")
+        ),
+        "vid_substring" to com.example.data.remote.YouTubeVideoItem(
+          id = "vid_substring",
+          snippet = wrongTitleSubstring.snippet,
+          contentDetails = com.example.data.remote.YouTubeContentDetails(duration = "PT4M15S")
+        ),
+        "vid_exact_ask" to com.example.data.remote.YouTubeVideoItem(
+          id = "vid_exact_ask",
+          snippet = exactStudio.snippet,
+          contentDetails = com.example.data.remote.YouTubeContentDetails(duration = "PT3M32S")
+        )
+      )
+
+    val picked =
+      repo.pickBestYouTubeCandidate(
+        items = listOf(shortClip, fullConcert, wrongTitleSubstring, exactStudio),
+        targetTitle = "Aşk",
+        targetArtist = "Sertab Erener",
+        detailsById = details,
+        targetDurationMs = 212_000L
+      )
+    assertEquals("vid_exact_ask", picked?.id?.videoId)
+  }
+
+  @Test
+  fun youtubeCandidateMatcher_decodesHtmlEntitiesAndHandlesCollaborations() {
+    val repo = HybridMusicRepository()
+    assertEquals("Pişman Değilim", repo.cleanSearchTerm("Pişman Değilim (Remastered 2024)"))
+    assertEquals("Semicenk", repo.extractPrimaryArtist("Semicenk & Doğu Swag"))
+
+    val escapedCandidate =
+      YouTubeSearchItem(
+        id = YouTubeSearchId(videoId = "vid_collab_ok"),
+        snippet = YouTubeSnippet(
+          title = "Semicenk &amp; Doğu Swag - Pişman Değilim (Official Video)",
+          channelTitle = "Semicenk"
+        )
+      )
+    val score =
+      repo.scoreYouTubeCandidate(
+        item = escapedCandidate,
+        targetTitle = "Pişman Değilim",
+        targetArtist = "Semicenk & Doğu Swag",
+        targetDurationMs = 190_000L
+      )
+    assertTrue("Expected high confidence match score, got $score", score >= 120)
+  }
+
+  @Test
+  fun notificationHelper_routesAllTypesToV6ChannelsAndSanitizesFallbacks() {
+    assertEquals(
+      com.example.notifications.VizyonNotificationHelper.CHANNEL_FOLLOWS,
+      com.example.notifications.VizyonNotificationHelper.channelForType(com.example.model.NotificationType.FOLLOW)
+    )
+    assertEquals(
+      com.example.notifications.VizyonNotificationHelper.CHANNEL_FOLLOWS,
+      com.example.notifications.VizyonNotificationHelper.channelForType(com.example.model.NotificationType.FOLLOW_REQUEST)
+    )
+    assertEquals(
+      com.example.notifications.VizyonNotificationHelper.CHANNEL_REACTIONS,
+      com.example.notifications.VizyonNotificationHelper.channelForType(com.example.model.NotificationType.LIKE)
+    )
+    assertEquals(
+      com.example.notifications.VizyonNotificationHelper.CHANNEL_REACTIONS,
+      com.example.notifications.VizyonNotificationHelper.channelForType(com.example.model.NotificationType.COMMENT)
+    )
+    assertEquals(
+      com.example.notifications.VizyonNotificationHelper.CHANNEL_REACTIONS,
+      com.example.notifications.VizyonNotificationHelper.channelForType(com.example.model.NotificationType.REPOST)
+    )
+    assertEquals(
+      com.example.notifications.VizyonNotificationHelper.CHANNEL_STORIES,
+      com.example.notifications.VizyonNotificationHelper.channelForType(com.example.model.NotificationType.STORY)
+    )
+    assertEquals(
+      com.example.notifications.VizyonNotificationHelper.CHANNEL_MESSAGES,
+      com.example.notifications.VizyonNotificationHelper.channelForType(com.example.model.NotificationType.MESSAGE)
+    )
+    assertEquals(
+      com.example.notifications.VizyonNotificationHelper.CHANNEL_MESSAGES,
+      com.example.notifications.VizyonNotificationHelper.channelForType(com.example.model.NotificationType.VOICE_MESSAGE)
+    )
+    assertEquals(
+      com.example.notifications.VizyonNotificationHelper.CHANNEL_MESSAGES,
+      com.example.notifications.VizyonNotificationHelper.channelForType(com.example.model.NotificationType.MESSAGE_REQUEST)
+    )
+
+    assertTrue(com.example.notifications.VizyonNotificationHelper.notificationSystemId("a") >= 100)
+    assertTrue(com.example.notifications.VizyonNotificationHelper.notificationSystemId("") >= 100)
+
+    val voiceFallback =
+      com.example.model.UserNotification(
+        id = "n_voice",
+        senderName = "Ali (@ali)",
+        senderHandle = "@ali",
+        type = com.example.model.NotificationType.VOICE_MESSAGE.name,
+        message = ""
+      )
+    assertEquals(
+      "Sana bir sesli mesaj gönderdi",
+      com.example.notifications.VizyonNotificationHelper.sanitizeNotificationMessage(voiceFallback)
+    )
+
+    val followReqFallback =
+      com.example.model.UserNotification(
+        id = "n_req",
+        senderName = "Zeynep",
+        type = com.example.model.NotificationType.FOLLOW_REQUEST.name,
+        message = "Zeynep: "
+      )
+    assertEquals(
+      "Sana takip isteği gönderdi",
+      com.example.notifications.VizyonNotificationHelper.sanitizeNotificationMessage(followReqFallback)
+    )
+  }
+
+  @Test
+  fun userNotification_defaultsAndModelSanitizersAreConsistent() {
+    val defaultNotif = com.example.model.UserNotification()
+    assertFalse(defaultNotif.read)
+    assertFalse(defaultNotif.sent)
+
+    com.example.model.NotificationType.entries.forEach { entry ->
+      assertEquals(entry, com.example.model.NotificationType.fromRaw(entry.name.lowercase()))
+    }
+    assertEquals(
+      com.example.model.ChatPrivacy.FOLLOWERS_ONLY,
+      com.example.model.ChatPrivacy.fromRaw("followers_only")
+    )
+    assertEquals(
+      com.example.model.ChatPrivacy.PUBLIC,
+      com.example.model.ChatPrivacy.fromRaw("invalid_mode")
+    )
+    assertEquals(
+      com.example.model.ReportReason.SPAM,
+      com.example.model.ReportReason.fromRaw("spam")
+    )
+    assertEquals(
+      com.example.model.ReportReason.OTHER,
+      com.example.model.ReportReason.fromRaw("unknown")
+    )
+
+    val longSanitized = com.example.model.sanitizeFirestoreId("user/with spaces & chars!" + "a".repeat(200))
+    assertTrue(longSanitized.length <= 120)
+    assertFalse(longSanitized.contains("/"))
+    assertFalse(longSanitized.contains(" "))
+    assertTrue(com.example.model.sanitizeFirestoreId("___").startsWith("item_"))
+  }
+
+  @Test
+  fun youtubePlayerManager_repeatCyclingQueueDeduplicationAndFailureRecovery() {
+    val manager = YouTubeForegroundPlayerManager()
+    val trackA =
+      MusicTrack(
+        trackId = "t_a",
+        title = "A",
+        artistId = "art_a",
+        artistName = "Artist A",
+        youtubeVideoId = "vidA1234567"
+      )
+    val trackB =
+      MusicTrack(
+        trackId = "t_b",
+        title = "B",
+        artistId = "art_b",
+        artistName = "Artist B",
+        youtubeVideoId = "vidB1234567"
+      )
+
+    assertEquals(com.example.player.RepeatMode.NONE, manager.state.value.repeatMode)
+    manager.cycleRepeatMode()
+    assertEquals(com.example.player.RepeatMode.ALL, manager.state.value.repeatMode)
+    manager.cycleRepeatMode()
+    assertEquals(com.example.player.RepeatMode.ONE, manager.state.value.repeatMode)
+    manager.cycleRepeatMode()
+    assertEquals(com.example.player.RepeatMode.NONE, manager.state.value.repeatMode)
+
+    manager.prepareLoading(trackA, listOf(trackA))
+    manager.addToQueue(trackA)
+    manager.addToQueue(trackB)
+    assertEquals(2, manager.state.value.queue.size)
+
+    manager.onVideoResolutionFailed("Video çözümlenemedi")
+    assertFalse(manager.state.value.isResolvingVideo)
+    assertFalse(manager.state.value.isPlaying)
+    assertEquals("Video çözümlenemedi", manager.state.value.playbackMessage)
+  }
 }

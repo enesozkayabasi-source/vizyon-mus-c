@@ -168,7 +168,7 @@ fun MiniPlayerBar(
 
     GlassStudioCard(
       highlighted = true,
-      cornerRadius = 20.dp,
+      cornerRadius = 18.dp,
       onClick = onExpandClick,
       modifier =
         Modifier
@@ -199,20 +199,20 @@ fun MiniPlayerBar(
               }
             }
           )
-          .padding(horizontal = 12.dp, vertical = 6.dp)
+          .padding(horizontal = 12.dp, vertical = 4.dp)
           .testTag("mini_player_bar")
     ) {
     Column {
       Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp)
+        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
       ) {
-        // Live mini exact 16:9 video player directly in place of the album cover
+        // Live mini exact 16:9 video player (96dp x 54dp) directly in place of the album cover
         Box(
           modifier =
-            Modifier.width(116.dp)
+            Modifier.width(96.dp)
               .aspectRatio(16f / 9f)
-              .clip(RoundedCornerShape(12.dp))
+              .clip(RoundedCornerShape(10.dp))
               .testTag("mini_player_live_video_slot")
         ) {
           YouTubeIframePlayerBox(
@@ -269,12 +269,12 @@ fun MiniPlayerBar(
         Box(
           contentAlignment = Alignment.Center,
           modifier =
-            Modifier.size(40.dp)
+            Modifier.size(38.dp)
               .drawBehind {
                 drawCircle(
                   color = miniBtnGlow.copy(alpha = 0.24f),
                   radius = size.minDimension / 2f + 2.dp.toPx(),
-                  style = Stroke(width = 3.dp.toPx())
+                  style = Stroke(width = 2.5.dp.toPx())
                 )
               }
               .clip(CircleShape)
@@ -291,7 +291,7 @@ fun MiniPlayerBar(
             imageVector = if (playbackState.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
             contentDescription = if (playbackState.isPlaying) "Duraklat" else "Oynat",
             tint = Color.White,
-            modifier = Modifier.size(22.dp)
+            modifier = Modifier.size(20.dp)
           )
         }
 
@@ -301,7 +301,7 @@ fun MiniPlayerBar(
           icon = Icons.Rounded.SkipNext,
           contentDescription = "Sonraki parça",
           onClick = onNextClick,
-          size = 38.dp,
+          size = 36.dp,
           tint = MaterialTheme.colorScheme.onSurface,
           modifier = Modifier.testTag("mini_player_next_btn")
         )
@@ -445,7 +445,11 @@ fun NowPlayingModal(
                 onClick = { onToggleFavorite(track) }
               )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+              verticalAlignment = Alignment.CenterVertically,
+              modifier = Modifier.fillMaxWidth()
+            ) {
               CategoryBadgePill(label = track.categoryTag)
               CategoryBadgePill(label = "Resmi Video • Ön Plan")
             }

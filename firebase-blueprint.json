@@ -25,6 +25,9 @@
         "preferredLanguage": { "type": "string" },
         "onboardingCompleted": { "type": "boolean" },
         "recentTracks": { "type": "array", "description": "Up to 5 recently played tracks backed up to cloud" },
+        "fcmToken": { "type": "string", "description": "Firebase Cloud Messaging device token for background push delivery" },
+        "fcmPushEnabled": { "type": "boolean", "description": "Whether background FCM push notifications are enabled" },
+        "fcmUpdatedAtMillis": { "type": "integer", "description": "Last FCM token sync timestamp in millis" },
         "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp on creation" },
         "updatedAt": { "type": "string", "format": "date-time", "description": "Server timestamp on update" }
       },
@@ -218,6 +221,20 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["activityId", "userId", "userName", "userHandle", "text", "createdAt", "updatedAt"]
+    },
+    "ActivityLikeUser": {
+      "title": "ActivityLikeUser",
+      "description": "Record of a user who liked an activity feed post.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "handle": { "type": "string" },
+        "photoUrl": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "displayName", "handle", "createdAt", "updatedAt"]
     },
     "ArtistFanPost": {
       "title": "ArtistFanPost",
@@ -428,6 +445,10 @@
     "/activity_feed/{activityId}/comments/{commentId}": {
       "schema": { "$ref": "#/entities/ActivityComment" },
       "description": "Comments on a social activity post"
+    },
+    "/activity_feed/{activityId}/likes/{likeUserId}": {
+      "schema": { "$ref": "#/entities/ActivityLikeUser" },
+      "description": "Users who liked a social activity post"
     },
     "/artists/{artistId}/fan_posts/{postId}": {
       "schema": { "$ref": "#/entities/ArtistFanPost" },

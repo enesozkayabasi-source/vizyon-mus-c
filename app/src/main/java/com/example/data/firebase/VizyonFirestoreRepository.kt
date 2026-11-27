@@ -5,6 +5,7 @@ import com.example.R
 import com.example.model.ActivityActionType
 import com.example.model.ActivityComment
 import com.example.model.ActivityFeedItem
+import com.example.model.ActivityLikeUser
 import com.example.model.ArtistFanPost
 import com.example.model.ArtistSummary
 import com.example.model.BlockedUser
@@ -43,6 +44,9 @@ import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.emitAll
@@ -140,7 +144,9 @@ class VizyonFirestoreRepository(
     preferredCornerDensity: String = "",
     preferredLanguage: String = "",
     onboardingCompleted: Boolean = false,
-    recentTracks: List<RecentTrackSummary> = emptyList()
+    recentTracks: List<RecentTrackSummary> = emptyList(),
+    fcmToken: String = "",
+    fcmPushEnabled: Boolean = true
   ): Result<Unit> {
     val path = "users/$uid"
     return try {
@@ -183,6 +189,11 @@ class VizyonFirestoreRepository(
         if (preferredLanguage.isNotBlank()) privatePayload["preferredLanguage"] = preferredLanguage.take(32)
         if (recentTracks.isNotEmpty()) {
           privatePayload["recentTracks"] = recentTracks.take(5).map { it.toFirestoreMap() }
+        }
+        if (fcmToken.isNotBlank()) {
+          privatePayload["fcmToken"] = fcmToken.take(512)
+          privatePayload["fcmPushEnabled"] = fcmPushEnabled
+          privatePayload["fcmUpdatedAtMillis"] = System.currentTimeMillis()
         }
         userRef.set(privatePayload).await()
       }
@@ -484,6 +495,10 @@ class VizyonFirestoreRepository(
       for (actDoc in activitiesSnap.documents) {
         val cmtsSnap = actDoc.reference.collection("comments").get().await()
         cmtsSnap.documents.forEach { it.reference.delete().await() }
+        runCatching {
+          val likesSnap = actDoc.reference.collection("likes").get().await()
+          likesSnap.documents.forEach { it.reference.delete().await() }
+        }
         actDoc.reference.delete().await()
       }
       val storiesSnap =
@@ -606,6 +621,9 @@ class VizyonFirestoreRepository(
           }.await()
         }
       } else {
+        if (isBlockedByPeer(uid, targetId)) {
+          return Result.failure(IllegalStateException("Bu kişi tarafından engellendiniz."))
+        }
         followingRef.set(
           mapOf(
             "targetUserId" to targetId,
@@ -682,6 +700,36 @@ class VizyonFirestoreRepository(
         }
         .wrapFirestoreErrors(userId, OperationType.LIST, path)
     )
+  }
+
+  fun observeIsBlockedByPeer(currentUserId: String, peerUserId: String): Flow<Boolean> {
+    val safePeer = sanitizeFirestoreId(peerUserId)
+    val safeMe = sanitizeFirestoreId(currentUserId)
+    if (safePeer.isBlank() || safeMe.isBlank() || safePeer == safeMe) return flow { emit(false) }
+    return db.collection("users").document(safePeer).collection("blocked_users").document(safeMe)
+      .snapshots()
+      .map { it.exists() }
+      .catch { emit(false) }
+  }
+
+  suspend fun isBlockedByPeer(currentUserId: String, peerUserId: String): Boolean {
+    val safePeer = sanitizeFirestoreId(peerUserId)
+    val safeMe = sanitizeFirestoreId(currentUserId)
+    if (safePeer.isBlank() || safeMe.isBlank() || safePeer == safeMe) return false
+    val blockedByPeer =
+      runCatching {
+        db.collection("users").document(safePeer).collection("blocked_users").document(safeMe)
+          .get()
+          .await()
+          .exists()
+      }.getOrDefault(false)
+    if (blockedByPeer) return true
+    return runCatching {
+      db.collection("users").document(safeMe).collection("blocked_users").document(safePeer)
+        .get()
+        .await()
+        .exists()
+    }.getOrDefault(false)
   }
 
   suspend fun blockUser(
@@ -850,6 +898,9 @@ class VizyonFirestoreRepository(
     return try {
       val uid = requireUserId()
       check(uid == requesterId && safeRecipient != uid)
+      if (isBlockedByPeer(uid, safeRecipient)) {
+        return Result.failure(IllegalStateException("Bu kişi tarafından engellendiniz."))
+      }
       val safeHandle = normalizeHandle(requesterHandle, requesterName)
       val safeAvatar = safeAvatarUrl(requesterAvatarUrl)
       db.collection("users").document(safeRecipient).collection("follow_requests").document(uid)
@@ -965,6 +1016,9 @@ class VizyonFirestoreRepository(
     return try {
       val uid = requireUserId()
       check(uid == requesterId && safeRecipient != uid)
+      if (isBlockedByPeer(uid, safeRecipient)) {
+        return Result.failure(IllegalStateException("Bu kişi tarafından engellendiniz."))
+      }
       val cleanPreview =
         previewText.trim().ifBlank {
           if (messageType == DirectMessageType.VOICE) {
@@ -1141,15 +1195,22 @@ class VizyonFirestoreRepository(
     attachedTrack: MusicTrack? = null,
     messageType: DirectMessageType = DirectMessageType.TEXT,
     audioBase64: String = "",
-    audioDurationMs: Long = 0L
+    audioDurationMs: Long = 0L,
+    messageId: String = sanitizeFirestoreId("msg_${UUID.randomUUID().toString().take(12)}")
   ): Result<String> {
     val peerId = sanitizeFirestoreId(peer.userId.ifBlank { peer.id })
     val chatId = buildDirectChatId(senderId, peerId)
-    val messageId = sanitizeFirestoreId("msg_${UUID.randomUUID().toString().take(12)}")
-    val path = "chats/$chatId/messages/$messageId"
+    val resolvedMessageId =
+      sanitizeFirestoreId(messageId).ifBlank {
+        sanitizeFirestoreId("msg_${UUID.randomUUID().toString().take(12)}")
+      }
+    val path = "chats/$chatId/messages/$resolvedMessageId"
     return try {
       val uid = requireUserId()
       check(uid == senderId)
+      if (isBlockedByPeer(uid, peerId)) {
+        return Result.failure(IllegalStateException("Bu kişi tarafından engellendiniz."))
+      }
       val resolvedType =
         when {
           messageType == DirectMessageType.VOICE && audioBase64.isNotBlank() -> DirectMessageType.VOICE
@@ -1243,11 +1304,17 @@ class VizyonFirestoreRepository(
         msgPayload["youtubeVideoId"] = attachedTrack.youtubeVideoId.take(64)
         msgPayload["source"] = attachedTrack.source.name
       }
-      chatRef.collection("messages").document(messageId).set(msgPayload).await()
+      chatRef.collection("messages").document(resolvedMessageId).set(msgPayload).await()
       Result.success(chatId)
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
+      if (e is FirebaseFirestoreException &&
+        e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED &&
+        isBlockedByPeer(senderId, peerId)
+      ) {
+        return Result.failure(IllegalStateException("Bu kişi tarafından engellendiniz."))
+      }
       handleFirestoreError(e, OperationType.CREATE, path)
       Result.failure(e)
     }
@@ -1733,27 +1800,110 @@ class VizyonFirestoreRepository(
     }
   }
 
-  suspend fun likeActivityItem(activityId: String, currentLikes: Long): Result<Unit> {
+  suspend fun toggleLikeActivityItem(
+    activityId: String,
+    userId: String,
+    userName: String,
+    userHandle: String,
+    userAvatarUrl: String
+  ): Result<Boolean> {
     val safeId = sanitizeFirestoreId(activityId)
-    val path = "activity_feed/$safeId"
+    val path = "activity_feed/$safeId/likes/$userId"
     return try {
-      requireUserId()
-      db.collection("activity_feed").document(safeId)
-        .update(
-          mapOf(
-            "likesCount" to (currentLikes + 1L),
-            "updatedAt" to FieldValue.serverTimestamp()
-          )
-        )
-        .await()
-      Result.success(Unit)
+      val uid = requireUserId()
+      check(uid == userId)
+      val safeHandle = normalizeHandle(userHandle, userName)
+      val safeAvatar = safeAvatarUrl(userAvatarUrl)
+      val parentRef = db.collection("activity_feed").document(safeId)
+      val likeRef = parentRef.collection("likes").document(uid)
+
+      val nowLiked =
+        db.runTransaction { tx ->
+          val parentSnap = tx.get(parentRef)
+          val likeSnap = tx.get(likeRef)
+          val curLikes = (parentSnap.getLong("likesCount") ?: 0L).coerceAtLeast(0L)
+          if (likeSnap.exists()) {
+            tx.delete(likeRef)
+            if (parentSnap.exists()) {
+              tx.update(
+                parentRef,
+                mapOf(
+                  "likesCount" to (curLikes - 1L).coerceAtLeast(0L),
+                  "updatedAt" to FieldValue.serverTimestamp()
+                )
+              )
+            }
+            false
+          } else {
+            val likePayload =
+              mutableMapOf<String, Any>(
+                "userId" to uid,
+                "displayName" to userName.ifBlank { "Vizyon Dinleyicisi" }.take(50),
+                "handle" to safeHandle,
+                "createdAt" to FieldValue.serverTimestamp(),
+                "updatedAt" to FieldValue.serverTimestamp()
+              )
+            if (safeAvatar.isNotBlank()) {
+              likePayload["photoUrl"] = safeAvatar
+            }
+            tx.set(likeRef, likePayload)
+            if (parentSnap.exists()) {
+              tx.update(
+                parentRef,
+                mapOf(
+                  "likesCount" to (curLikes + 1L),
+                  "updatedAt" to FieldValue.serverTimestamp()
+                )
+              )
+            }
+            true
+          }
+        }.await()
+
+      Result.success(nowLiked)
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
-      handleFirestoreError(e, OperationType.UPDATE, path)
+      handleFirestoreError(e, OperationType.WRITE, path)
       Result.failure(e)
     }
   }
+
+  fun observeActivityLikes(userId: String, activityId: String): Flow<List<ActivityLikeUser>> = flow {
+    val safeId = sanitizeFirestoreId(activityId)
+    val path = "activity_feed/$safeId/likes"
+    emitAll(
+      db.collection("activity_feed").document(safeId).collection("likes")
+        .snapshots()
+        .map { snap ->
+          snap.toObjects(ActivityLikeUser::class.java, DocumentSnapshot.ServerTimestampBehavior.ESTIMATE)
+            .sortedByDescending { it.createdAt?.toDate()?.time ?: 0L }
+        }
+        .wrapFirestoreErrors(userId, OperationType.LIST, path)
+    )
+  }
+
+  suspend fun fetchLikedActivityIds(userId: String, activityIds: List<String>): Set<String> =
+    runCatching {
+      val uid = requireUserId()
+      if (uid != userId || activityIds.isEmpty()) return emptySet()
+      val targets = activityIds.map(::sanitizeFirestoreId).filter { it.isNotBlank() }.distinct().take(35)
+      coroutineScope {
+        targets.map { actId ->
+          async {
+            val exists =
+              runCatching {
+                db.collection("activity_feed").document(actId)
+                  .collection("likes").document(uid)
+                  .get()
+                  .await()
+                  .exists()
+              }.getOrDefault(false)
+            if (exists) actId else null
+          }
+        }.awaitAll().filterNotNull().toSet()
+      }
+    }.getOrDefault(emptySet())
 
   fun observeActivityComments(userId: String, activityId: String): Flow<List<ActivityComment>> = flow {
     val safeId = sanitizeFirestoreId(activityId)
@@ -1896,6 +2046,13 @@ class VizyonFirestoreRepository(
       runCatching {
         docRef.collection("comments")
           .whereEqualTo("userId", uid)
+          .get()
+          .await()
+          .documents
+          .forEach { it.reference.delete().await() }
+      }
+      runCatching {
+        docRef.collection("likes")
           .get()
           .await()
           .documents
@@ -2050,6 +2207,9 @@ class VizyonFirestoreRepository(
     return try {
       val uid = requireUserId()
       check(uid == senderId)
+      if (isBlockedByPeer(uid, safeRecipient)) {
+        return Result.failure(IllegalStateException("Bu kişi tarafından engellendiniz."))
+      }
       val safeHandle = normalizeHandle(senderHandle, senderName)
       val payload =
         mutableMapOf<String, Any>(
@@ -2060,6 +2220,7 @@ class VizyonFirestoreRepository(
           "type" to type.name,
           "message" to message.ifBlank { type.label }.take(240),
           "read" to false,
+          "sent" to false,
           "createdAt" to FieldValue.serverTimestamp(),
           "updatedAt" to FieldValue.serverTimestamp()
         )

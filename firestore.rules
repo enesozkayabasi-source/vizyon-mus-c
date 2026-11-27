@@ -20,6 +20,13 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function hasMutualBlock(uidA, uidB) {
+      return isValidId(uidA) && isValidId(uidB) && (
+        exists(/databases/$(database)/documents/users/$(uidA)/blocked_users/$(uidB)) ||
+        exists(/databases/$(database)/documents/users/$(uidB)/blocked_users/$(uidA))
+      );
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -79,6 +86,9 @@ service cloud.firestore {
              (!('preferredLanguage' in data) || (data.preferredLanguage is string && data.preferredLanguage.size() <= 32)) &&
              (!('onboardingCompleted' in data) || data.onboardingCompleted is bool) &&
              (!('recentTracks' in data) || (data.recentTracks is list && data.recentTracks.size() <= 5 && (data.recentTracks.size() == 0 || data.recentTracks[0] is map))) &&
+             (!('fcmToken' in data) || (data.fcmToken is string && data.fcmToken.size() <= 512)) &&
+             (!('fcmPushEnabled' in data) || data.fcmPushEnabled is bool) &&
+             (!('fcmUpdatedAtMillis' in data) || (data.fcmUpdatedAtMillis is int && data.fcmUpdatedAtMillis >= 0)) &&
              isValidTimestamp(data.createdAt) &&
              isValidTimestamp(data.updatedAt);
     }
@@ -122,7 +132,7 @@ service cloud.firestore {
     function isValidDirectChatThread(data) {
       return data.chatId is string && isValidId(data.chatId) &&
              data.participantIds is list && data.participantIds.size() == 2 &&
-             data.participantIds[0] is string && data.participantIds[1] is string &&
+             isValidId(data.participantIds[0]) && isValidId(data.participantIds[1]) &&
              data.participantIds[0] != data.participantIds[1] &&
              (!('participantNames' in data) || data.participantNames is map) &&
              (!('participantHandles' in data) || data.participantHandles is map) &&
@@ -138,7 +148,7 @@ service cloud.firestore {
     function isValidDirectChatMessage(data) {
       return data.chatId is string && isValidId(data.chatId) &&
              data.participantIds is list && data.participantIds.size() == 2 &&
-             data.participantIds[0] is string && data.participantIds[1] is string &&
+             isValidId(data.participantIds[0]) && isValidId(data.participantIds[1]) &&
              data.senderId is string && isValidId(data.senderId) &&
              data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 50 &&
              data.senderHandle is string && data.senderHandle.size() >= 2 && data.senderHandle.size() <= 30 &&
@@ -228,6 +238,15 @@ service cloud.firestore {
              isValidTimestamp(data.updatedAt);
     }
 
+    function isValidActivityLikeUser(data) {
+      return data.userId is string && isValidId(data.userId) &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 50 &&
+             data.handle is string && data.handle.size() >= 2 && data.handle.size() <= 30 &&
+             (!('photoUrl' in data) || isValidAvatarString(data.photoUrl)) &&
+             isValidTimestamp(data.createdAt) &&
+             isValidTimestamp(data.updatedAt);
+    }
+
     function isValidArtistFanPost(data) {
       return data.artistId is string && isValidId(data.artistId) &&
              data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
@@ -273,6 +292,7 @@ service cloud.firestore {
              (!('targetType' in data) || (data.targetType is string && data.targetType.size() <= 40)) &&
              (!('targetId' in data) || (data.targetId is string && data.targetId.size() <= 128)) &&
              data.read is bool &&
+             (!('sent' in data) || data.sent is bool) &&
              isValidTimestamp(data.createdAt) &&
              isValidTimestamp(data.updatedAt);
     }
@@ -344,6 +364,7 @@ service cloud.firestore {
                          'requireFollowApproval', 'chatPrivacy', 'defaultStoryTheme', 'securityPasscodeHash', 'securityPasscodeSalt',
                          'rememberMe', 'lockOnLaunch', 'preferredThemeMode', 'preferredAccentPalette',
                          'preferredCornerDensity', 'preferredLanguage', 'onboardingCompleted', 'recentTracks',
+                         'fcmToken', 'fcmPushEnabled', 'fcmUpdatedAtMillis',
                          'createdAt', 'updatedAt'
                        ]) &&
                        isValidUserProfile(incoming());
@@ -356,6 +377,7 @@ service cloud.firestore {
                          'requireFollowApproval', 'chatPrivacy', 'defaultStoryTheme', 'securityPasscodeHash', 'securityPasscodeSalt',
                          'rememberMe', 'lockOnLaunch', 'preferredThemeMode', 'preferredAccentPalette',
                          'preferredCornerDensity', 'preferredLanguage', 'onboardingCompleted', 'recentTracks',
+                         'fcmToken', 'fcmPushEnabled', 'fcmUpdatedAtMillis',
                          'updatedAt'
                        ]);
       allow delete: if isOwner(userId) && isValidId(userId);
@@ -383,13 +405,13 @@ service cloud.firestore {
         allow get: if isSignedIn() && isValidId(userId) && isValidId(followerId);
         allow list: if isSignedIn() && isValidId(userId);
         allow create: if isSignedIn() && isValidId(userId) && isValidId(followerId) &&
-                         (isOwner(userId) || request.auth.uid == followerId) &&
+                         (isOwner(userId) || (request.auth.uid == followerId && !hasMutualBlock(userId, request.auth.uid))) &&
                          incoming().targetUserId == followerId &&
                          incoming().keys().hasAll(['targetUserId', 'displayName', 'handle', 'createdAt', 'updatedAt']) &&
                          incoming().keys().hasOnly(['targetUserId', 'displayName', 'handle', 'photoUrl', 'createdAt', 'updatedAt']) &&
                          isValidFollowConnection(incoming());
         allow update: if isSignedIn() && isValidId(userId) && isValidId(followerId) &&
-                         (isOwner(userId) || request.auth.uid == followerId) &&
+                         (isOwner(userId) || (request.auth.uid == followerId && !hasMutualBlock(userId, request.auth.uid))) &&
                          isValidFollowConnection(incoming()) &&
                          incoming().targetUserId == existing().targetUserId &&
                          incoming().createdAt == existing().createdAt &&
@@ -399,7 +421,8 @@ service cloud.firestore {
       }
 
       match /blocked_users/{blockedUserId} {
-        allow get: if isOwner(userId) && isValidId(blockedUserId);
+        allow get: if isValidId(userId) && isValidId(blockedUserId) &&
+                      (isOwner(userId) || (isSignedIn() && request.auth.uid == blockedUserId));
         allow list: if isOwner(userId);
         allow create: if isOwner(userId) && isValidId(blockedUserId) &&
                          incoming().blockedUserId == blockedUserId &&
@@ -416,6 +439,7 @@ service cloud.firestore {
         allow create: if isSignedIn() && isValidId(userId) && isValidId(requesterId) &&
                          request.auth.uid == requesterId &&
                          userId != requesterId &&
+                         !hasMutualBlock(userId, request.auth.uid) &&
                          incoming().requesterId == requesterId &&
                          incoming().recipientId == userId &&
                          incoming().status == 'PENDING' &&
@@ -437,6 +461,7 @@ service cloud.firestore {
         allow create: if isSignedIn() && isValidId(userId) && isValidId(requesterId) &&
                          request.auth.uid == requesterId &&
                          userId != requesterId &&
+                         !hasMutualBlock(userId, request.auth.uid) &&
                          incoming().requesterId == requesterId &&
                          incoming().recipientId == userId &&
                          incoming().status == 'PENDING' &&
@@ -477,11 +502,13 @@ service cloud.firestore {
         allow get: if isOwner(userId) && isValidId(notificationId);
         allow list: if isOwner(userId);
         allow create: if isSignedIn() && isValidId(userId) && isValidId(notificationId) &&
+                         !hasMutualBlock(userId, request.auth.uid) &&
                          incoming().recipientId == userId &&
                          incoming().senderId == request.auth.uid &&
                          incoming().read == false &&
+                         (!('sent' in incoming()) || incoming().sent == false) &&
                          incoming().keys().hasAll(['recipientId', 'senderId', 'senderName', 'senderHandle', 'type', 'message', 'read', 'createdAt', 'updatedAt']) &&
-                         incoming().keys().hasOnly(['recipientId', 'senderId', 'senderName', 'senderHandle', 'senderAvatarUrl', 'type', 'trackId', 'trackTitle', 'message', 'targetType', 'targetId', 'read', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['recipientId', 'senderId', 'senderName', 'senderHandle', 'senderAvatarUrl', 'type', 'trackId', 'trackTitle', 'message', 'targetType', 'targetId', 'read', 'sent', 'createdAt', 'updatedAt']) &&
                          isValidUserNotification(incoming());
         allow update: if isOwner(userId) && isValidId(notificationId) &&
                          isValidUserNotification(incoming()) &&
@@ -618,7 +645,8 @@ service cloud.firestore {
                          (existing().userId == request.auth.uid &&
                           incoming().diff(existing()).affectedKeys().hasOnly(['note', 'visibility', 'updatedAt'])) ||
                          ((existing().visibility == 'PUBLIC' || existing().userId == request.auth.uid) &&
-                          incoming().likesCount == existing().likesCount + 1 &&
+                          (incoming().likesCount == existing().likesCount + 1 ||
+                           (existing().likesCount > 0 && incoming().likesCount == existing().likesCount - 1)) &&
                           incoming().diff(existing()).affectedKeys().hasOnly(['likesCount', 'updatedAt'])) ||
                          ((existing().visibility == 'PUBLIC' || existing().userId == request.auth.uid) &&
                           incoming().commentsCount == existing().get('commentsCount', 0) + 1 &&
@@ -654,6 +682,27 @@ service cloud.firestore {
                          incoming().diff(existing()).affectedKeys().hasOnly(['text', 'updatedAt']);
         allow delete: if isSignedIn() && isValidId(activityId) && isValidId(commentId) &&
                          existing().userId == request.auth.uid;
+      }
+
+      match /likes/{likeUserId} {
+        allow get: if isSignedIn() && isValidId(activityId) && isValidId(likeUserId) &&
+                      (get(/databases/$(database)/documents/activity_feed/$(activityId)).data.visibility == 'PUBLIC' ||
+                       get(/databases/$(database)/documents/activity_feed/$(activityId)).data.userId == request.auth.uid);
+        allow list: if isSignedIn() && isValidId(activityId) &&
+                       (get(/databases/$(database)/documents/activity_feed/$(activityId)).data.visibility == 'PUBLIC' ||
+                        get(/databases/$(database)/documents/activity_feed/$(activityId)).data.userId == request.auth.uid);
+        allow create: if isSignedIn() && isValidId(activityId) && isValidId(likeUserId) &&
+                         request.auth.uid == likeUserId &&
+                         incoming().userId == likeUserId &&
+                         (get(/databases/$(database)/documents/activity_feed/$(activityId)).data.visibility == 'PUBLIC' ||
+                          get(/databases/$(database)/documents/activity_feed/$(activityId)).data.userId == request.auth.uid) &&
+                         incoming().keys().hasAll(['userId', 'displayName', 'handle', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'displayName', 'handle', 'photoUrl', 'createdAt', 'updatedAt']) &&
+                         isValidActivityLikeUser(incoming());
+        allow update: if false;
+        allow delete: if isSignedIn() && isValidId(activityId) && isValidId(likeUserId) &&
+                         (request.auth.uid == likeUserId ||
+                          get(/databases/$(database)/documents/activity_feed/$(activityId)).data.userId == request.auth.uid);
       }
     }
 
@@ -701,7 +750,8 @@ service cloud.firestore {
                        incoming().lastSenderId == request.auth.uid &&
                        incoming().keys().hasAll(['chatId', 'participantIds', 'lastMessageText', 'lastSenderId', 'lastMessageAtMillis', 'createdAt', 'updatedAt']) &&
                        incoming().keys().hasOnly(['chatId', 'participantIds', 'participantNames', 'participantHandles', 'participantAvatars', 'lastMessageText', 'lastSenderId', 'lastTrackTitle', 'lastMessageAtMillis', 'createdAt', 'updatedAt']) &&
-                       isValidDirectChatThread(incoming());
+                       isValidDirectChatThread(incoming()) &&
+                       !hasMutualBlock(incoming().participantIds[0], incoming().participantIds[1]);
       allow update: if isSignedIn() && isValidId(chatId) &&
                        request.auth.uid in existing().participantIds &&
                        incoming().chatId == existing().chatId &&
@@ -709,6 +759,7 @@ service cloud.firestore {
                        incoming().createdAt == existing().createdAt &&
                        incoming().lastSenderId == request.auth.uid &&
                        isValidDirectChatThread(incoming()) &&
+                       !hasMutualBlock(incoming().participantIds[0], incoming().participantIds[1]) &&
                        incoming().diff(existing()).affectedKeys().hasOnly([
                          'participantNames', 'participantHandles', 'participantAvatars',
                          'lastMessageText', 'lastSenderId', 'lastTrackTitle', 'lastMessageAtMillis', 'updatedAt'
@@ -716,12 +767,19 @@ service cloud.firestore {
       allow delete: if isSignedIn() && isValidId(chatId) && request.auth.uid in resource.data.participantIds;
 
       match /messages/{messageId} {
-        allow get: if isSignedIn() && isValidId(chatId) && isValidId(messageId) &&
-                      request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds &&
-                      (resource == null || request.auth.uid in resource.data.participantIds);
-        allow list: if isSignedIn() && isValidId(chatId) &&
+        allow get: if isSignedIn() && isValidId(chatId) && isValidId(messageId) && (
+                      (!exists(/databases/$(database)/documents/chats/$(chatId)) && resource == null) ||
+                      (exists(/databases/$(database)/documents/chats/$(chatId)) &&
                        request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds &&
-                       request.auth.uid in resource.data.participantIds;
+                       (resource == null || request.auth.uid in resource.data.participantIds))
+                    );
+        allow list: if isSignedIn() && isValidId(chatId) && (
+                       (!exists(/databases/$(database)/documents/chats/$(chatId)) &&
+                        request.auth.uid in resource.data.participantIds) ||
+                       (exists(/databases/$(database)/documents/chats/$(chatId)) &&
+                        request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participantIds &&
+                        request.auth.uid in resource.data.participantIds)
+                     );
         allow create: if isSignedIn() && isValidId(chatId) && isValidId(messageId) &&
                          incoming().chatId == chatId &&
                          incoming().senderId == request.auth.uid &&
@@ -734,7 +792,8 @@ service cloud.firestore {
                            'trackId', 'trackTitle', 'artistName', 'albumArtUrl', 'youtubeVideoId', 'source',
                            'createdAt', 'updatedAt'
                          ]) &&
-                         isValidDirectChatMessage(incoming());
+                         isValidDirectChatMessage(incoming()) &&
+                         !hasMutualBlock(incoming().participantIds[0], incoming().participantIds[1]);
         allow update: if false;
         allow delete: if isSignedIn() && isValidId(chatId) && isValidId(messageId) &&
                          (resource.data.senderId == request.auth.uid || request.auth.uid in resource.data.participantIds);

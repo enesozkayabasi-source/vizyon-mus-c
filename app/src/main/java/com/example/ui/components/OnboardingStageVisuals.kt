@@ -1226,7 +1226,7 @@ fun HolographicConcertVipTicket(
         VipTicketRow("Katalog & Tarzlar", "${selectedLanguage.badge} • ${selectedGenres.size} müzik türü")
         VipTicketRow(
           "Güvenlik & Bildirim",
-          "${if (passcodeConfigured) "Kasa Aktif ✓" else "Bekliyor"} • ${if (backgroundNotifServiceEnabled) "Canlı Bildirim" else "Ön Plan"}"
+          "${if (passcodeConfigured) "Kasa Aktif ✓" else "Bekliyor"} • ${if (backgroundNotifServiceEnabled) "FCM Push" else "Uygulama İçi"}"
         )
         VipTicketRow("Bulut Yedeği", if (isSignedInWithGoogle) "Google Bulut Bağlı ✓" else "Cihaz Kasası")
       }

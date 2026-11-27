@@ -240,13 +240,16 @@ fun createYouTubeMusicApiService(
     .create(YouTubeMusicApiService::class.java)
 }
 
-fun parseIsoDurationMs(iso: String?): Long {
-  if (iso.isNullOrBlank()) return 180_000L
+fun parseIsoDurationMs(iso: String?): Long =
+  parseIsoDurationMsOrNull(iso) ?: 180_000L
+
+fun parseIsoDurationMsOrNull(iso: String?): Long? {
+  if (iso.isNullOrBlank()) return null
   val regex = Regex("PT(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?")
-  val match = regex.matchEntire(iso) ?: return 180_000L
+  val match = regex.matchEntire(iso) ?: return null
   val hours = match.groupValues[1].toLongOrNull() ?: 0L
   val minutes = match.groupValues[2].toLongOrNull() ?: 0L
   val seconds = match.groupValues[3].toLongOrNull() ?: 0L
   val total = (hours * 3600 + minutes * 60 + seconds) * 1000L
-  return if (total > 0L) total else 180_000L
+  return if (total > 0L) total else null
 }

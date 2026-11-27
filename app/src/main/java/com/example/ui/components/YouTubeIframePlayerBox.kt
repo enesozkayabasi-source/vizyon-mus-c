@@ -287,7 +287,7 @@ fun YouTubeIframePlayerBox(
     }
   }
 
-  val shape = RoundedCornerShape(if (compactMode) 12.dp else 22.dp)
+  val shape = RoundedCornerShape(if (compactMode) 10.dp else 22.dp)
   val boxModifier =
     if (compactMode) {
       modifier
@@ -342,28 +342,23 @@ fun YouTubeIframePlayerBox(
           val cssW = if (wv.width > 0) wv.width / density else 0f
           val cssH = if (wv.height > 0) wv.height / density else 0f
           val compactFlag = if (compactMode) "true" else "false"
-          val syncJs =
-            if (cssW > 4f && cssH > 4f) {
-              "window.vizyonSyncStage && window.vizyonSyncStage($compactFlag, $cssW, $cssH);"
+          val syncJsForView: (WebView) -> String = { web ->
+            val d = web.resources.displayMetrics.density.coerceAtLeast(1f)
+            val wCss = if (web.width > 0) web.width / d else 0f
+            val hCss = if (web.height > 0) web.height / d else 0f
+            if (wCss > 4f && hCss > 4f) {
+              "window.vizyonSyncStage && window.vizyonSyncStage($compactFlag, $wCss, $hCss);"
             } else {
               "window.vizyonSyncStage && window.vizyonSyncStage($compactFlag);"
             }
-          runCatching { wv.evaluateJavascript(syncJs, null) }
-          wv.postDelayed(
-            {
-              val d = wv.resources.displayMetrics.density.coerceAtLeast(1f)
-              val w2 = if (wv.width > 0) wv.width / d else 0f
-              val h2 = if (wv.height > 0) wv.height / d else 0f
-              val delayedJs =
-                if (w2 > 4f && h2 > 4f) {
-                  "window.vizyonSyncStage && window.vizyonSyncStage($compactFlag, $w2, $h2);"
-                } else {
-                  "window.vizyonSyncStage && window.vizyonSyncStage($compactFlag);"
-                }
-              runCatching { wv.evaluateJavascript(delayedJs, null) }
-            },
-            90L
-          )
+          }
+          runCatching { wv.evaluateJavascript(syncJsForView(wv), null) }
+          listOf(90L, 220L, 380L).forEach { delayMs ->
+            wv.postDelayed(
+              { runCatching { wv.evaluateJavascript(syncJsForView(wv), null) } },
+              delayMs
+            )
+          }
         },
         modifier = Modifier.fillMaxSize()
       )
@@ -483,8 +478,7 @@ private fun buildYouTubeIframeHtml(initialVideoId: String): String =
         }
         #stage {
           position: fixed;
-          top: 0;
-          left: 0;
+          inset: 0;
           width: 100%;
           height: 100%;
           display: flex;
@@ -494,17 +488,21 @@ private fun buildYouTubeIframeHtml(initialVideoId: String): String =
           overflow: hidden;
         }
         #player-frame {
-          width: 640px;
-          height: 360px;
-          flex: 0 0 auto;
           position: relative;
-          transform-origin: center center;
+          width: 100%;
+          height: 100%;
           background: #000000;
           overflow: hidden;
+          transform-origin: center center;
+          flex-shrink: 0;
         }
         #player, #player iframe {
-          width: 640px !important;
-          height: 360px !important;
+          position: absolute !important;
+          inset: 0 !important;
+          width: 100% !important;
+          height: 100% !important;
+          max-width: 100% !important;
+          max-height: 100% !important;
           display: block;
           border: 0;
         }
@@ -517,8 +515,6 @@ private fun buildYouTubeIframeHtml(initialVideoId: String): String =
         </div>
       </div>
       <script>
-        var STAGE_W = 640;
-        var STAGE_H = 360;
         var ytPlayer = null;
         var ytApiReady = false;
         var isYtReady = false;
@@ -526,27 +522,58 @@ private fun buildYouTubeIframeHtml(initialVideoId: String): String =
         var progressTimer = null;
         var lastHintW = 0;
         var lastHintH = 0;
+        var lastCompact = null;
 
         function syncStageScale(isCompact, hintW, hintH) {
           var stage = document.getElementById('stage');
           var frame = document.getElementById('player-frame');
           if (!stage || !frame) return;
+
+          if (typeof isCompact === 'boolean' && lastCompact !== isCompact) {
+            lastCompact = isCompact;
+            if (!(typeof hintW === 'number' && hintW > 4)) lastHintW = 0;
+            if (!(typeof hintH === 'number' && hintH > 4)) lastHintH = 0;
+          }
+
           if (typeof hintW === 'number' && hintW > 4) lastHintW = hintW;
           if (typeof hintH === 'number' && hintH > 4) lastHintH = hintH;
 
-          var vw = (lastHintW > 4)
-            ? lastHintW
-            : Math.max(window.innerWidth || 0, document.documentElement.clientWidth || 0, stage.clientWidth || 0, 1);
-          var vh = (lastHintH > 4)
-            ? lastHintH
-            : Math.max(window.innerHeight || 0, document.documentElement.clientHeight || 0, stage.clientHeight || 0, 1);
+          var measuredW = Math.max(window.innerWidth || 0, document.documentElement.clientWidth || 0, stage.clientWidth || 0);
+          var measuredH = Math.max(window.innerHeight || 0, document.documentElement.clientHeight || 0, stage.clientHeight || 0);
+          var vw = (lastHintW > 4) ? lastHintW : Math.max(measuredW, 1);
+          var vh = (lastHintH > 4) ? lastHintH : Math.max(measuredH, 1);
 
-          stage.style.width = vw + 'px';
-          stage.style.height = vh + 'px';
+          stage.style.width = '100%';
+          stage.style.height = '100%';
 
-          var scale = Math.min(vw / STAGE_W, vh / STAGE_H);
-          if (!isFinite(scale) || scale <= 0) scale = 1;
-          frame.style.transform = 'scale(' + scale.toFixed(6) + ')';
+          if (lastCompact === true && vw > 4 && vh > 4) {
+            var virtualW = 320;
+            var virtualH = 180;
+            var fitScale = Math.min(vw / virtualW, vh / virtualH);
+            frame.style.width = virtualW + 'px';
+            frame.style.height = virtualH + 'px';
+            frame.style.transformOrigin = 'center center';
+            frame.style.transform = 'scale(' + fitScale.toFixed(5) + ')';
+            if (ytPlayer && isYtReady && typeof ytPlayer.setSize === 'function') {
+              try {
+                ytPlayer.setSize(virtualW, virtualH);
+              } catch (e) {}
+            }
+          } else {
+            frame.style.transform = 'none';
+            frame.style.width = '100%';
+            frame.style.height = '100%';
+            if (ytPlayer && isYtReady && typeof ytPlayer.setSize === 'function' && vw > 4 && vh > 4) {
+              try {
+                ytPlayer.setSize(Math.round(vw), Math.round(vh));
+              } catch (e) {}
+            }
+          }
+          var iframe = document.querySelector('#player iframe');
+          if (iframe) {
+            iframe.style.width = '100%';
+            iframe.style.height = '100%';
+          }
         }
 
         window.vizyonSyncStage = function(isCompact, hintW, hintH) {
@@ -618,8 +645,8 @@ private fun buildYouTubeIframeHtml(initialVideoId: String): String =
           }
           try {
             ytPlayer = new YT.Player('player', {
-              width: '640',
-              height: '360',
+              width: '100%',
+              height: '100%',
               videoId: currentVid,
               playerVars: {
                 autoplay: 1,

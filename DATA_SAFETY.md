@@ -46,20 +46,26 @@ This guide maps **Vizyon Music**'s exact runtime behavior, permissions, and Fire
 - **In-app search history / Recent tracks / Favorites / Playlists** — Stored locally in Room/DataStore and optionally synced to Firestore when signed in.
 - **Blocked users list & User safety reports** — Used strictly for safety, abuse prevention, and user-controlled moderation.
 
+### F. Device or Other IDs (Optional Push Delivery)
+- **Firebase Cloud Messaging (FCM) Registration Token** (`fcmToken`) — **Optional** (only stored when signed in and **Anlık Push Bildirimleri (FCM)** + `POST_NOTIFICATIONS` are enabled).
+  - *Purpose:* App functionality (delivering background/closed-app direct message, follow, like, comment, story, and request alerts via FCM `NotificationCompat.MessagingStyle`).
+  - *Lifecycle:* Automatically cleared on sign-out, push toggle disable, or **Hesabı Kalıcı Sil**.
+
 ---
 
 ## 3. Permissions & Justification
 
 | Permission | Protection Level | When Requested | Purpose |
 |---|---|---|---|
-| `INTERNET`, `ACCESS_NETWORK_STATE` | Normal | Install-time | Music catalog, lyrics, video playback, optional cloud sync |
-| `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`, `WAKE_LOCK` | Normal | Only when user enables background live notification service | Keeps realtime Firestore social/DM notification listener reliable when app is backgrounded |
-| `RECEIVE_BOOT_COMPLETED` | Normal | System boot (signed-in users) | Restores realtime notification listener after device reboot |
-| `POST_NOTIFICATIONS` | Runtime (API 33+) | On user toggle or notification setup | Delivers follow, like, comment, DM, and request alerts |
+| `INTERNET`, `ACCESS_NETWORK_STATE` | Normal | Install-time | Music catalog, lyrics, video playback, optional cloud sync & FCM |
+| `POST_NOTIFICATIONS` | Runtime (API 33+) | On user toggle or notification setup | Delivers follow, like, comment, story, DM, and request alerts |
 | `RECORD_AUDIO` | Runtime | Only when tapping mic in DM thread | Records <=30s AAC voice messages with preview before send |
 
+**Foreground Services & Architecture:**
+- **Zero persistent foreground services:** Vizyon Music does **not** use `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`, `RECEIVE_BOOT_COMPLETED`, or `WAKE_LOCK`. Live notifications run via Firestore snapshot listeners while the app is active and via event-driven Firebase Cloud Messaging (`VizyonFirebaseMessagingService`) when backgrounded or closed.
+
 **Removed / Never Requested Permissions:**
-- `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_AUDIO`, `ACCESS_FINE_LOCATION`, `CAMERA`.
+- `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC`, `RECEIVE_BOOT_COMPLETED`, `WAKE_LOCK`, `READ_EXTERNAL_STORAGE`, `WRITE_EXTERNAL_STORAGE`, `READ_MEDIA_IMAGES`, `READ_MEDIA_VIDEO`, `READ_MEDIA_AUDIO`, `ACCESS_FINE_LOCATION`, `CAMERA`, `com.google.android.gms.permission.AD_ID`.
 
 ---
 

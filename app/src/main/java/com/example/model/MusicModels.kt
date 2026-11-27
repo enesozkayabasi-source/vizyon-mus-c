@@ -212,6 +212,9 @@ data class UserProfile(
   val preferredCornerDensity: String = "",
   val preferredLanguage: String = "",
   val onboardingCompleted: Boolean = false,
+  val fcmToken: String = "",
+  val fcmPushEnabled: Boolean = true,
+  val fcmUpdatedAtMillis: Long = 0L,
   val recentTracks: List<RecentTrackSummary> = emptyList(),
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null
@@ -478,6 +481,18 @@ data class ActivityComment(
 
 @Keep
 @IgnoreExtraProperties
+data class ActivityLikeUser(
+  @DocumentId val id: String = "",
+  val userId: String = "",
+  val displayName: String = "",
+  val handle: String = "",
+  val photoUrl: String = "",
+  @ServerTimestamp val createdAt: Timestamp? = null,
+  @ServerTimestamp val updatedAt: Timestamp? = null
+)
+
+@Keep
+@IgnoreExtraProperties
 data class ArtistFanPost(
   @DocumentId val id: String = "",
   val artistId: String = "",
@@ -659,6 +674,7 @@ data class UserNotification(
   val targetType: String = "",
   val targetId: String = "",
   val read: Boolean = false,
+  val sent: Boolean = false,
   @ServerTimestamp val createdAt: Timestamp? = null,
   @ServerTimestamp val updatedAt: Timestamp? = null
 )

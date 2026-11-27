@@ -55,10 +55,8 @@ class VizyonApplication : Application(), ImageLoaderFactory {
 
   override fun onTrimMemory(level: Int) {
     super.onTrimMemory(level)
-    if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_MODERATE ||
-      level == ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN
-    ) {
-      trimVolatileMemoryCaches(aggressive = level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW)
+    if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
+      trimVolatileMemoryCaches(aggressive = level >= ComponentCallbacks2.TRIM_MEMORY_BACKGROUND)
     }
   }
 
@@ -73,7 +71,7 @@ class VizyonApplication : Application(), ImageLoaderFactory {
       if (aggressive) {
         imageLoader.memoryCache?.clear()
       } else {
-        imageLoader.memoryCache?.trimMemory(ComponentCallbacks2.TRIM_MEMORY_RUNNING_MODERATE)
+        imageLoader.memoryCache?.trimMemory(ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN)
       }
     }
     if (aggressive) {

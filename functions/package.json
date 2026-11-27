@@ -1,0 +1,16 @@
+{
+  "name": "vizyon-music-functions",
+  "description": "Cloud Functions for Vizyon Music FCM push notification triggers",
+  "engines": {
+    "node": "20"
+  },
+  "main": "index.js",
+  "scripts": {
+    "lint": "node --check index.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.1",
+    "firebase-functions": "^6.1.1"
+  },
+  "private": true
+}

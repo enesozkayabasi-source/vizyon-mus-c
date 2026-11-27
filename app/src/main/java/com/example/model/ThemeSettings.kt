@@ -69,5 +69,6 @@ data class AppAppearanceConfig(
   val lockOnLaunch: Boolean = false,
   val hasVaultPasscode: Boolean = false,
   val requireFollowApproval: Boolean = false,
-  val backgroundNotifServiceEnabled: Boolean = true
+  val backgroundNotifServiceEnabled: Boolean = true,
+  val notifPermissionPrompted: Boolean = false
 )
